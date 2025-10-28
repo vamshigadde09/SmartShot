@@ -777,3 +777,6 @@ toward becoming a fully-featured intelligent photo management solution.
 ================================================================================
 END OF PROJECT REPORT
 ================================================================================
+
+
+.\gradlew assembleRelease

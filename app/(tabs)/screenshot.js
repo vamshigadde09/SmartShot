@@ -507,6 +507,15 @@ export default function ScreenshotPageSimple() {
                             Open Notification Settings
                         </ThemedText>
                     </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.galleryButton} onPress={() => {
+                        // Navigate to gallery tab
+                        // This will be handled by the tab navigator
+                    }}>
+                        <ThemedText style={styles.galleryButtonText}>
+                            View Screenshot Gallery
+                        </ThemedText>
+                    </TouchableOpacity>
                 </View>
             </ThemedView>
         </ScrollView>
@@ -767,6 +776,18 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     settingsButtonText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    galleryButton: {
+        backgroundColor: '#4CAF50',
+        padding: 15,
+        borderRadius: 8,
+        marginTop: 10,
+        alignItems: 'center',
+    },
+    galleryButtonText: {
         color: '#fff',
         fontSize: 16,
         fontWeight: 'bold',
