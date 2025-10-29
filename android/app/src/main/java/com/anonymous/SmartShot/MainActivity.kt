@@ -8,6 +8,11 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.net.Uri
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
+import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -17,6 +22,7 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
+  private val PERMISSION_REQUEST_CODE = 1001
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
@@ -26,6 +32,8 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(null)
+    // Request runtime permissions on app start
+    requestPermissionsOnStart()
     try {
       val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
       if (!pm.isIgnoringBatteryOptimizations(packageName)) {
@@ -36,6 +44,57 @@ class MainActivity : ReactActivity() {
         startActivity(intent)
       }
     } catch (_: Exception) { }
+  }
+  private fun requestPermissionsOnStart() {
+    try {
+      val permissions = mutableListOf<String>()
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (!PermissionManager.hasStoragePermission(this)) {
+          permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+        }
+        if (!PermissionManager.hasNotificationPermission(this)) {
+          permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+      } else {
+        if (!PermissionManager.hasStoragePermission(this)) {
+          permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+      }
+      // Microphone for audio notes
+      if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        permissions.add(Manifest.permission.RECORD_AUDIO)
+      }
+
+      if (permissions.isNotEmpty()) {
+        ActivityCompat.requestPermissions(this, permissions.toTypedArray(), PERMISSION_REQUEST_CODE)
+      }
+    } catch (e: Exception) {
+      Log.e("MainActivity", "Error requesting permissions: ${e.message}")
+    }
+  }
+
+  override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    if (requestCode == PERMISSION_REQUEST_CODE) {
+      var allGranted = true
+      for (result in grantResults) {
+        if (result != PackageManager.PERMISSION_GRANTED) {
+          allGranted = false
+          break
+        }
+      }
+      if (allGranted) {
+        try {
+          val intent = Intent(this, ScreenshotDetectionService::class.java).apply { action = ScreenshotDetectionService.ACTION_START_SERVICE }
+          startService(intent)
+          Log.d("MainActivity", "All permissions granted; started background service")
+        } catch (e: Exception) {
+          Log.w("MainActivity", "Failed to start service after permission: ${e.message}")
+        }
+      } else {
+        Log.w("MainActivity", "Some permissions were denied")
+      }
+    }
   }
   
   override fun onNewIntent(intent: Intent?) {

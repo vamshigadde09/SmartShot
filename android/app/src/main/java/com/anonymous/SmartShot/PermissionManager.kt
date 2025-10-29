@@ -65,6 +65,9 @@ object PermissionManager {
             } else {
                 permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
+
+            // Always request microphone for audio notes
+            permissions.add(Manifest.permission.RECORD_AUDIO)
             
             ActivityCompat.requestPermissions(
                 activity,

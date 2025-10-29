@@ -87,9 +87,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace "com.smartshot"
+    namespace "com.anonymous.SmartShot"
     defaultConfig {
-        applicationId "com.smartshot"
+        applicationId "com.anonymous.SmartShot"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

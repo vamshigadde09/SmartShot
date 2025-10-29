@@ -107,15 +107,43 @@ export default function SettingsScreen() {
 
     const requestNotificationPermission = async () => {
         try {
-            const ScreenshotModule = NativeModules.ScreenshotModule;
-            if (ScreenshotModule) {
-                await ScreenshotModule.openNotificationSettings();
-                // Check permission again after user returns
-                setTimeout(checkPermissions, 1000);
+            if (Platform.OS !== 'android') return;
+
+            if (Platform.Version >= 33) {
+                const result = await PermissionsAndroid.request(
+                    PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+                    {
+                        title: 'Notification Permission',
+                        message: 'SmartShot needs notification permission to alert you when screenshots are detected.',
+                        buttonPositive: 'Allow',
+                        buttonNegative: 'Deny',
+                    }
+                );
+
+                const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+                setNotificationPermission(granted);
+
+                if (granted) {
+                    Alert.alert('Success', 'Notification permission granted!');
+                    const ScreenshotModule = NativeModules.ScreenshotModule;
+                    ScreenshotModule?.recreateNotificationChannel?.();
+                } else {
+                    Alert.alert(
+                        'Permission Denied',
+                        'Notification permission is required for background detection.',
+                        [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: 'Open Settings', onPress: () => Linking.openSettings() }
+                        ]
+                    );
+                }
+            } else {
+                const ScreenshotModule = NativeModules.ScreenshotModule;
+                ScreenshotModule?.openNotificationSettings?.();
             }
         } catch (error) {
-            console.error('Error opening notification settings:', error);
-            Alert.alert('Error', 'Failed to open notification settings');
+            console.error('Error requesting notification permission:', error);
+            Alert.alert('Error', 'Failed to request notification permission');
         }
     };
 
