@@ -15,6 +15,10 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
+import java.io.OutputStream
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -679,6 +683,74 @@ class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBase
             
         } catch (e: Exception) {
             Log.e("ScreenshotModule", "Error showing notification: ${e.message}")
+        }
+    }
+
+    @ReactMethod
+    fun saveImageToGallery(base64Image: String, fileName: String, subfolder: String?, promise: Promise) {
+        try {
+            // Decode base64 into bytes
+            val imageBytes = Base64.decode(base64Image, Base64.DEFAULT)
+            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                ?: run {
+                    promise.reject("DECODE_ERROR", "Failed to decode image data")
+                    return
+                }
+
+            // Prepare MediaStore values
+            val resolver = context.contentResolver
+            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+
+            val values = android.content.ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val folder = (subfolder?.trim()?.takeIf { it.isNotEmpty() } ?: "SmartShot")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${MediaStore.Images.Media.RELATIVE_PATH}".let { _ -> "Pictures/" + folder })
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+
+            val uri = resolver.insert(collection, values)
+                ?: run {
+                    promise.reject("WRITE_ERROR", "Failed to insert into MediaStore")
+                    return
+                }
+
+            var out: OutputStream? = null
+            try {
+                out = resolver.openOutputStream(uri)
+                if (out == null) {
+                    promise.reject("STREAM_ERROR", "Failed to open output stream")
+                    return
+                }
+                // Save as PNG to preserve quality and transparency if any
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                    promise.reject("COMPRESS_ERROR", "Failed to write image data")
+                    return
+                }
+            } finally {
+                try { out?.close() } catch (_: Exception) {}
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val update = android.content.ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                resolver.update(uri, update, null, null)
+            }
+
+            promise.resolve(uri.toString())
+        } catch (e: SecurityException) {
+            Log.e("ScreenshotModule", "SecurityException saving image: ${e.message}")
+            promise.reject("SECURITY_ERROR", e.message)
+        } catch (e: Exception) {
+            Log.e("ScreenshotModule", "Unexpected error saving image: ${e.message}")
+            promise.reject("SAVE_ERROR", e.message)
         }
     }
 }

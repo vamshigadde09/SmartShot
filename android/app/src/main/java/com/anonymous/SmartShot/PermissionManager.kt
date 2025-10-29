@@ -23,11 +23,16 @@ object PermissionManager {
                     Manifest.permission.READ_MEDIA_IMAGES
                 ) == PackageManager.PERMISSION_GRANTED
             } else {
-                // Android 12 and below use READ_EXTERNAL_STORAGE
-                ContextCompat.checkSelfPermission(
+                // Android 12 and below use READ/WRITE_EXTERNAL_STORAGE for full access
+                val hasRead = ContextCompat.checkSelfPermission(
                     context,
                     Manifest.permission.READ_EXTERNAL_STORAGE
                 ) == PackageManager.PERMISSION_GRANTED
+                val hasWrite = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+                hasRead && hasWrite
             }
             Log.d(TAG, "Storage permission: $hasPermission")
             hasPermission
@@ -64,6 +69,7 @@ object PermissionManager {
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS)
             } else {
                 permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
 
             // Always request microphone for audio notes

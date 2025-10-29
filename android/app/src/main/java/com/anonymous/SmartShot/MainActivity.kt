@@ -58,6 +58,7 @@ class MainActivity : ReactActivity() {
       } else {
         if (!PermissionManager.hasStoragePermission(this)) {
           permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+          permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
       }
       // Microphone for audio notes
