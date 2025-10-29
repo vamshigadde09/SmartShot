@@ -1,5 +1,7 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import * as FileSystem from 'expo-file-system/legacy';
+import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -87,20 +89,21 @@ export default function GalleryScreen() {
         }
     };
 
-    const handleEdit = async () => {
-        try {
-            const item = getCurrentItem();
-            if (!item) return;
-            const ScreenshotModule = NativeModules.ScreenshotModule;
-            if (ScreenshotModule && typeof ScreenshotModule.openImageEditor === 'function') {
-                await ScreenshotModule.openImageEditor(item.uri);
-            } else {
-                Alert.alert('Not Available', 'Image editing is not supported on this device.');
+    const handleEdit = () => {
+        const item = getCurrentItem();
+        if (!item) return;
+
+        // Close the viewer first
+        setViewerVisible(false);
+
+        // Navigate to edit screen with screenshot data
+        router.push({
+            pathname: '/edit-screenshot',
+            params: {
+                screenshotUri: item.uri,
+                screenshotId: item.id
             }
-        } catch (e) {
-            console.error('Edit error:', e);
-            Alert.alert('Error', 'Could not open editor for this image');
-        }
+        });
     };
 
     const handleDelete = async () => {
@@ -180,6 +183,37 @@ export default function GalleryScreen() {
         }
     };
 
+    const getStorageFile = async () => {
+        try {
+            const docInfo = await FileSystem.getInfoAsync(FileSystem.documentDirectory);
+            const storagePath = (docInfo?.exists ? FileSystem.documentDirectory : FileSystem.cacheDirectory) + 'screenshots.json';
+            return storagePath;
+        } catch {
+            return FileSystem.cacheDirectory + 'screenshots.json';
+        }
+    };
+
+    const loadEditedIndex = async () => {
+        try {
+            const path = await getStorageFile();
+            const info = await FileSystem.getInfoAsync(path);
+            if (!info.exists) return { ids: new Set(), uris: new Set() };
+            const json = await FileSystem.readAsStringAsync(path);
+            const items = JSON.parse(json);
+            const ids = new Set();
+            const uris = new Set();
+            for (const it of items) {
+                const edited = Boolean((it.text && it.text.trim()) || it.audio || it.reminder || it.isTodo || (it.tags && String(it.tags).trim()));
+                if (!edited) continue;
+                if (it.id) ids.add(String(it.id));
+                if (it.uri) uris.add(String(it.uri));
+            }
+            return { ids, uris };
+        } catch {
+            return { ids: new Set(), uris: new Set() };
+        }
+    };
+
     const loadScreenshots = async (reset = false) => {
         contentOpacity.setValue(0);
         setLoading(true);
@@ -204,7 +238,10 @@ export default function GalleryScreen() {
 
                     // Get screenshots using native module
                     const screenshots = await ScreenshotModule.getScreenshots();
-                    setScreenshots(screenshots || []);
+                    // Filter to only those that have been edited in our storage
+                    const { ids, uris } = await loadEditedIndex();
+                    const filtered = (screenshots || []).filter((s) => ids.has(String(s.id)) || uris.has(String(s.uri)));
+                    setScreenshots(filtered);
                 }
             } else {
                 // For iOS, show empty state
@@ -565,14 +602,16 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-around',
         alignItems: 'center',
+        gap: 8,
     },
     actionButton: {
         backgroundColor: 'rgba(255,255,255,0.15)',
         paddingVertical: 10,
-        paddingHorizontal: 18,
+        paddingHorizontal: 12,
         borderRadius: 20,
-        minWidth: 90,
+        minWidth: 70,
         alignItems: 'center',
+        flex: 1,
     },
     deleteButton: {
         backgroundColor: 'rgba(255,59,48,0.35)',

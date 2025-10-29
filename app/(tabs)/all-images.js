@@ -1,5 +1,5 @@
 import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -8,16 +8,18 @@ import {
     Dimensions,
     FlatList,
     Image,
+    LayoutAnimation,
     Modal,
     NativeModules,
     PermissionsAndroid,
     Platform,
     Share,
     StyleSheet,
-    TextInput,
     TouchableOpacity,
+    UIManager,
     View
 } from 'react-native';
+import { GestureHandlerRootView, PinchGestureHandler, State } from 'react-native-gesture-handler';
 
 // Try to import expo-media-library, fallback to native module if not available
 let MediaLibrary = null;
@@ -28,7 +30,15 @@ try {
 }
 
 const { width } = Dimensions.get('window');
-const imageSize = (width - 60) / 3; // 3 columns with padding
+const padding = 20;
+const spacing = 10;
+
+// Enable LayoutAnimation for Android
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+    UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// Removed getColumnsAndSize function - using direct calculation instead
 
 // Prefer expo-image (no peer conflict), then FastImage; fallback to RN Image
 let ExpoImageLib = null;
@@ -68,6 +78,7 @@ const SmartImage = ({ uri, style, mode }) => {
 };
 
 export default function AllImagesScreen() {
+    const { bucketId, title } = useLocalSearchParams();
     const [images, setImages] = useState([]);
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
@@ -80,6 +91,132 @@ export default function AllImagesScreen() {
     const [viewerIndex, setViewerIndex] = useState(0);
     const viewerListRef = React.useRef(null);
     const [permissionResponse, requestPermission] = MediaLibrary ? MediaLibrary.usePermissions() : [null, null];
+
+    // Dynamic grid state management with smooth animations
+    const [columns, setColumns] = useState(3);
+    const screenWidth = Dimensions.get('window').width;
+    const imageSize = (screenWidth - padding * 2 - spacing * (columns - 1)) / columns;
+
+    // Pinch gesture state
+    const [pinchScale, setPinchScale] = useState(1);
+    const [lastScale, setLastScale] = useState(1);
+    const [isPinching, setIsPinching] = useState(false);
+
+    // Animated values for smooth pinch scaling
+    const scaleValue = React.useRef(new Animated.Value(1)).current;
+    const opacityValue = React.useRef(new Animated.Value(1)).current;
+
+    // Smooth grid change with LayoutAnimation
+    const changeGrid = useCallback((cols) => {
+        // Configure a more dramatic animation for grid changes
+        LayoutAnimation.configureNext({
+            duration: 600,
+            create: {
+                type: LayoutAnimation.Types.easeInEaseOut,
+                property: LayoutAnimation.Properties.opacity,
+                duration: 400,
+            },
+            update: {
+                type: LayoutAnimation.Types.easeInEaseOut,
+                property: LayoutAnimation.Properties.scaleXY,
+                duration: 600,
+            },
+            delete: {
+                type: LayoutAnimation.Types.easeInEaseOut,
+                property: LayoutAnimation.Properties.opacity,
+                duration: 300,
+            },
+        });
+
+        // Add a slight delay to make the animation more visible
+        setTimeout(() => {
+            setColumns(cols);
+        }, 50);
+    }, []);
+
+    // Pinch gesture handler with smooth animations
+    const onPinchGestureEvent = useCallback((event) => {
+        const scale = event.nativeEvent.scale;
+        setPinchScale(scale);
+
+        // Real-time scaling animation during pinch
+        if (isPinching) {
+            Animated.timing(scaleValue, {
+                toValue: Math.max(0.8, Math.min(1.2, scale)),
+                duration: 0,
+                useNativeDriver: true,
+            }).start();
+
+            // Subtle opacity change for visual feedback
+            Animated.timing(opacityValue, {
+                toValue: Math.max(0.7, Math.min(1, 1 - (Math.abs(scale - 1) * 0.3))),
+                duration: 0,
+                useNativeDriver: true,
+            }).start();
+        }
+    }, [isPinching, scaleValue, opacityValue]);
+
+    const onPinchHandlerStateChange = useCallback((event) => {
+        const { state, scale } = event.nativeEvent;
+
+        if (state === State.BEGAN) {
+            setIsPinching(true);
+            // Reset scale values
+            scaleValue.setValue(1);
+            opacityValue.setValue(1);
+        } else if (state === State.ACTIVE) {
+            // Continue real-time scaling during active pinch
+            const currentScale = lastScale * scale;
+            Animated.timing(scaleValue, {
+                toValue: Math.max(0.8, Math.min(1.2, currentScale)),
+                duration: 0,
+                useNativeDriver: true,
+            }).start();
+        } else if (state === State.END || state === State.CANCELLED) {
+            setIsPinching(false);
+
+            // Determine grid based on pinch scale
+            const newScale = lastScale * scale;
+            let newColumns = columns;
+
+            if (newScale > 1.3 && columns > 2) {
+                // Pinch in - fewer columns (zoom in)
+                newColumns = Math.max(2, columns - 1);
+            } else if (newScale < 0.7 && columns < 6) {
+                // Pinch out - more columns (zoom out)
+                newColumns = Math.min(6, columns + 1);
+            }
+
+            // Smooth transition back to normal scale
+            Animated.parallel([
+                Animated.timing(scaleValue, {
+                    toValue: 1,
+                    duration: 200,
+                    useNativeDriver: true,
+                }),
+                Animated.timing(opacityValue, {
+                    toValue: 1,
+                    duration: 200,
+                    useNativeDriver: true,
+                })
+            ]).start();
+
+            if (newColumns !== columns) {
+                // Add a slight delay for the scale animation to complete
+                setTimeout(() => {
+                    changeGrid(newColumns);
+                }, 100);
+            }
+
+            setLastScale(1);
+            setPinchScale(1);
+        }
+    }, [columns, lastScale, changeGrid, scaleValue, opacityValue]);
+
+    // Initialize with 3 columns on mount
+    useEffect(() => {
+        setColumns(3);
+    }, []);
 
     const getCurrentItem = () => {
         if (!filteredImages || filteredImages.length === 0) return null;
@@ -151,8 +288,32 @@ export default function AllImagesScreen() {
         }
     };
 
+    const handleEdit = () => {
+        const item = getCurrentItem();
+        if (!item) return;
+
+        // Close the viewer first
+        setViewerVisible(false);
+
+        // Navigate to edit screen with screenshot data
+        router.push({
+            pathname: '/edit-screenshot',
+            params: {
+                screenshotUri: item.uri,
+                screenshotId: item.id
+            }
+        });
+    };
+
     useEffect(() => {
-        loadImages(true);
+        const initializeImages = async () => {
+            try {
+                await loadImages(true);
+            } catch (error) {
+                console.error('Error initializing images:', error);
+            }
+        };
+        initializeImages();
     }, []);
 
     // Preload next batch of images for smoother scrolling
@@ -199,39 +360,44 @@ export default function AllImagesScreen() {
     };
 
     const loadImages = async (reset = false) => {
-        // Check permissions first
-        if (MediaLibrary) {
-            if (!permissionResponse?.granted) {
-                const permission = await requestPermission();
-                if (!permission.granted) {
-                    Alert.alert('Permission Required', 'Media library permission is required to view images.');
+        try {
+            // Check permissions first
+            if (MediaLibrary) {
+                if (!permissionResponse?.granted) {
+                    const permission = await requestPermission();
+                    if (!permission.granted) {
+                        Alert.alert('Permission Required', 'Media library permission is required to view images.');
+                        return;
+                    }
+                }
+            } else {
+                // Use native module for permissions (same as Screenshots screen)
+                try {
+                    const ScreenshotModule = NativeModules.ScreenshotModule;
+                    if (ScreenshotModule) {
+                        // Check permissions first
+                        const hasPermission = await ScreenshotModule.checkStoragePermission();
+                        if (!hasPermission) {
+                            const granted = await requestStoragePermission();
+                            if (!granted) {
+                                Alert.alert(
+                                    'Permission Required',
+                                    'Storage permission is required to view images.',
+                                    [{ text: 'OK' }]
+                                );
+                                setImages([]);
+                                return;
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.warn('Error checking permissions:', err);
                     return;
                 }
             }
-        } else {
-            // Use native module for permissions (same as Screenshots screen)
-            try {
-                const ScreenshotModule = NativeModules.ScreenshotModule;
-                if (ScreenshotModule) {
-                    // Check permissions first
-                    const hasPermission = await ScreenshotModule.checkStoragePermission();
-                    if (!hasPermission) {
-                        const granted = await requestStoragePermission();
-                        if (!granted) {
-                            Alert.alert(
-                                'Permission Required',
-                                'Storage permission is required to view images.',
-                                [{ text: 'OK' }]
-                            );
-                            setImages([]);
-                            return;
-                        }
-                    }
-                }
-            } catch (err) {
-                console.warn('Error checking permissions:', err);
-                return;
-            }
+        } catch (error) {
+            console.error('Error in permission check:', error);
+            return;
         }
 
         contentOpacity.setValue(0);
@@ -258,8 +424,10 @@ export default function AllImagesScreen() {
                 // Use native module - getScreenshots now returns ALL images (no filtering)
                 const screenshots = await NativeModules.ScreenshotModule.getScreenshots();
                 console.log('getScreenshots result (all images):', screenshots.length);
-
-                const allImages = screenshots.map((img, index) => ({
+                const filteredByBucket = bucketId
+                    ? screenshots.filter((img) => String(img.bucketId) === String(bucketId))
+                    : screenshots;
+                const allImages = filteredByBucket.map((img, index) => ({
                     id: img.id || `img_${index}`,
                     uri: img.uri,
                     filename: img.name || `image_${index}.jpg`,
@@ -315,160 +483,198 @@ export default function AllImagesScreen() {
         setViewerVisible(true);
     };
 
-    const renderImage = useCallback(({ item: image, index }) => (
-        <TouchableOpacity
-            key={image.id || index}
-            style={styles.imageContainer}
-            onPress={() => openViewer(index)}
-        >
-            <SmartImage
-                uri={image.uri}
-                style={styles.image}
-                mode="cover"
-                onError={() => {
-                    console.log('Failed to load image:', image.uri);
-                }}
-            />
-            <View style={styles.imageInfo}>
-                <ThemedText style={styles.imageName} numberOfLines={1}>
-                    {image.filename}
-                </ThemedText>
-                <ThemedText style={styles.imageDate}>
-                    {formatDate(image.creationTime)}
-                </ThemedText>
-            </View>
-        </TouchableOpacity>
-    ), []);
+    const renderImage = useCallback(({ item: image, index }) => {
+        try {
+            return (
+                <Animated.View
+                    key={image.id || index}
+                    style={[
+                        styles.imageContainer,
+                        {
+                            width: imageSize,
+                            height: imageSize,
+                            // Add a subtle scale animation for repositioning
+                            transform: [{
+                                scale: new Animated.Value(1)
+                            }]
+                        }
+                    ]}
+                >
+                    <TouchableOpacity
+                        style={[styles.imageTouchable, { width: imageSize, height: imageSize }]}
+                        onPress={() => openViewer(index)}
+                    >
+                        <SmartImage
+                            uri={image.uri}
+                            style={[styles.image, { width: imageSize, height: imageSize }]}
+                            mode="cover"
+                            onError={() => {
+                                console.error('Failed to load image:', image.uri);
+                            }}
+                        />
+                        {columns <= 3 && (
+                            <View style={styles.imageInfo}>
+                                <ThemedText style={styles.imageName} numberOfLines={1}>
+                                    {image.filename}
+                                </ThemedText>
+                                <ThemedText style={styles.imageDate}>
+                                    {formatDate(image.creationTime)}
+                                </ThemedText>
+                            </View>
+                        )}
+                    </TouchableOpacity>
+                </Animated.View>
+            );
+        } catch (error) {
+            console.error('Error in renderImage:', error);
+            return null;
+        }
+    }, [imageSize, columns, openViewer]);
 
     return (
-        <ThemedView style={styles.container}>
-            <View style={styles.header}>
-                <ThemedText type="title" style={styles.title}>
-                    All Images
-                </ThemedText>
-                <ThemedText style={styles.subtitle}>
-                    {filteredImages.length} images found
-                </ThemedText>
-
-                {/* Search Bar */}
-                <View style={styles.searchContainer}>
-                    <TextInput
-                        style={styles.searchInput}
-                        placeholder="Search images..."
-                        placeholderTextColor="#999"
-                        value={searchQuery}
-                        onChangeText={setSearchQuery}
-                    />
-                </View>
-            </View>
-
-            {loading && images.length === 0 ? (
-                <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="large" color="#8B5CF6" />
-                    <ThemedText style={styles.loadingText}>Loading images...</ThemedText>
-                </View>
-            ) : (
-                <Animated.View style={{ flex: 1, opacity: contentOpacity }}>
-                    <FlatList
-                        data={filteredImages}
-                        keyExtractor={(item, idx) => String(item.id || item.uri || idx)}
-                        numColumns={3}
-                        columnWrapperStyle={styles.columnWrapper}
-                        contentContainerStyle={filteredImages.length === 0 ? styles.listEmptyContainer : styles.listContent}
-                        renderItem={renderImage}
-                        refreshing={refreshing}
-                        onRefresh={onRefresh}
-                        onEndReached={loadMoreImages}
-                        onEndReachedThreshold={0.5}
-                        windowSize={10}
-                        initialNumToRender={30}
-                        maxToRenderPerBatch={15}
-                        updateCellsBatchingPeriod={50}
-                        removeClippedSubviews
-                        ListEmptyComponent={
-                            <View style={styles.emptyContainer}>
-                                <ThemedText style={styles.emptyText}>
-                                    {searchQuery ? 'No images found matching your search' : 'No images found'}
-                                </ThemedText>
-                                <ThemedText style={styles.emptySubtext}>
-                                    {searchQuery ? 'Try a different search term' : 'Take some photos to see them here'}
-                                </ThemedText>
-                                <TouchableOpacity style={styles.refreshButton} onPress={() => loadImages(true)}>
-                                    <ThemedText style={styles.refreshButtonText}>
-                                        Refresh
-                                    </ThemedText>
-                                </TouchableOpacity>
-                            </View>
-                        }
-                        ListFooterComponent={
-                            loading && images.length > 0 ? (
-                                <View style={styles.loadingFooter}>
-                                    <ActivityIndicator size="small" color="#8B5CF6" />
-                                    <ThemedText style={styles.loadingFooterText}>Loading more...</ThemedText>
-                                </View>
-                            ) : null
-                        }
-                    />
-                </Animated.View>
-            )}
-
-            <Modal
-                visible={viewerVisible}
-                transparent={false}
-                animationType="fade"
-                onRequestClose={() => setViewerVisible(false)}
-                onShow={() => {
-                    if (viewerListRef.current && viewerIndex >= 0) {
-                        try {
-                            viewerListRef.current.scrollToIndex({ index: viewerIndex, animated: false });
-                        } catch { }
-                    }
-                }}
+        <GestureHandlerRootView style={styles.container}>
+            <PinchGestureHandler
+                onGestureEvent={onPinchGestureEvent}
+                onHandlerStateChange={onPinchHandlerStateChange}
             >
-                <View style={styles.viewerContainer}>
-                    <View style={styles.viewerHeader}>
-                        <TouchableOpacity style={styles.closeButton} onPress={() => setViewerVisible(false)}>
-                            <ThemedText style={styles.closeButtonText}>Close</ThemedText>
-                        </TouchableOpacity>
-                        <ThemedText style={styles.viewerTitle} numberOfLines={1}>
-                            {filteredImages[viewerIndex] ? filteredImages[viewerIndex].filename : ''}
+                <View style={styles.container}>
+                    <View style={styles.header}>
+                        <ThemedText type="title" style={styles.title}>
+                            {title ? String(title) : 'All Images'}
                         </ThemedText>
                     </View>
 
-                    <FlatList
-                        ref={viewerListRef}
-                        data={filteredImages}
-                        keyExtractor={(item, idx) => String(item.id || idx)}
-                        horizontal
-                        pagingEnabled
-                        initialScrollIndex={Math.min(Math.max(viewerIndex, 0), Math.max(filteredImages.length - 1, 0))}
-                        getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
-                        showsHorizontalScrollIndicator={false}
-                        onMomentumScrollEnd={(e) => {
-                            const index = Math.round(e.nativeEvent.contentOffset.x / width);
-                            setViewerIndex(index);
-                        }}
-                        renderItem={({ item }) => (
-                            <View style={styles.viewerPage}>
-                                <SmartImage
-                                    uri={item.uri}
-                                    style={styles.viewerImage}
-                                    mode="contain"
+                    {loading && images.length === 0 ? (
+                        <View style={styles.loadingContainer}>
+                            <ActivityIndicator size="large" color="#8B5CF6" />
+                            <ThemedText style={styles.loadingText}>Loading images...</ThemedText>
+                        </View>
+                    ) : (
+                        <Animated.View style={{
+                            flex: 1,
+                            opacity: contentOpacity,
+                            transform: [
+                                { scale: scaleValue },
+                            ]
+                        }}>
+                            <Animated.View style={{
+                                flex: 1,
+                                opacity: opacityValue,
+                            }}>
+                                <FlatList
+                                    data={filteredImages}
+                                    keyExtractor={(item, idx) => {
+                                        try {
+                                            return String(item.id || item.uri || idx);
+                                        } catch (error) {
+                                            Alert.alert('Debug KeyExtractor Error', `Error in keyExtractor: ${error.message}`, [{ text: 'OK' }]);
+                                            return String(idx);
+                                        }
+                                    }}
+                                    numColumns={columns}
+                                    key={`grid-${columns}-${filteredImages.length}`} // re-render grid cleanly with more specific key
+                                    columnWrapperStyle={columns > 1 ? styles.columnWrapper : null}
+                                    contentContainerStyle={filteredImages.length === 0 ? styles.listEmptyContainer : styles.listContent}
+                                    renderItem={renderImage}
+                                    refreshing={refreshing}
+                                    onRefresh={onRefresh}
+                                    onEndReached={loadMoreImages}
+                                    onEndReachedThreshold={0.5}
+                                    windowSize={10}
+                                    initialNumToRender={30}
+                                    maxToRenderPerBatch={15}
+                                    updateCellsBatchingPeriod={50}
+                                    removeClippedSubviews
+                                    ListEmptyComponent={
+                                        <View style={styles.emptyContainer}>
+                                            <ThemedText style={styles.emptyText}>
+                                                {searchQuery ? 'No images found matching your search' : 'No images found'}
+                                            </ThemedText>
+                                            <ThemedText style={styles.emptySubtext}>
+                                                {searchQuery ? 'Try a different search term' : 'Take some photos to see them here'}
+                                            </ThemedText>
+                                            <TouchableOpacity style={styles.refreshButton} onPress={() => loadImages(true)}>
+                                                <ThemedText style={styles.refreshButtonText}>
+                                                    Refresh
+                                                </ThemedText>
+                                            </TouchableOpacity>
+                                        </View>
+                                    }
+                                    ListFooterComponent={
+                                        loading && images.length > 0 ? (
+                                            <View style={styles.loadingFooter}>
+                                                <ActivityIndicator size="small" color="#8B5CF6" />
+                                                <ThemedText style={styles.loadingFooterText}>Loading more...</ThemedText>
+                                            </View>
+                                        ) : null
+                                    }
                                 />
+                            </Animated.View>
+                        </Animated.View>
+                    )}
+
+                    <Modal
+                        visible={viewerVisible}
+                        transparent={false}
+                        animationType="fade"
+                        onRequestClose={() => setViewerVisible(false)}
+                        onShow={() => {
+                            if (viewerListRef.current && viewerIndex >= 0) {
+                                try {
+                                    viewerListRef.current.scrollToIndex({ index: viewerIndex, animated: false });
+                                } catch { }
+                            }
+                        }}
+                    >
+                        <View style={styles.viewerContainer}>
+                            <View style={styles.viewerHeader}>
+                                <TouchableOpacity style={styles.closeButton} onPress={() => setViewerVisible(false)}>
+                                    <ThemedText style={styles.closeButtonText}>Close</ThemedText>
+                                </TouchableOpacity>
+                                <ThemedText style={styles.viewerTitle} numberOfLines={1}>
+                                    {filteredImages[viewerIndex] ? filteredImages[viewerIndex].filename : ''}
+                                </ThemedText>
                             </View>
-                        )}
-                    />
-                    <View style={styles.viewerActions}>
-                        <TouchableOpacity style={styles.actionButton} onPress={handleShare}>
-                            <ThemedText style={styles.actionText}>Share</ThemedText>
-                        </TouchableOpacity>
-                        <TouchableOpacity style={[styles.actionButton, styles.deleteButton]} onPress={handleDelete}>
-                            <ThemedText style={styles.actionText}>Delete</ThemedText>
-                        </TouchableOpacity>
-                    </View>
+
+                            <FlatList
+                                ref={viewerListRef}
+                                data={filteredImages}
+                                keyExtractor={(item, idx) => String(item.id || idx)}
+                                horizontal
+                                pagingEnabled
+                                initialScrollIndex={Math.min(Math.max(viewerIndex, 0), Math.max(filteredImages.length - 1, 0))}
+                                getItemLayout={(data, index) => ({ length: width, offset: width * index, index })}
+                                showsHorizontalScrollIndicator={false}
+                                onMomentumScrollEnd={(e) => {
+                                    const index = Math.round(e.nativeEvent.contentOffset.x / width);
+                                    setViewerIndex(index);
+                                }}
+                                renderItem={({ item }) => (
+                                    <View style={styles.viewerPage}>
+                                        <SmartImage
+                                            uri={item.uri}
+                                            style={styles.viewerImage}
+                                            mode="contain"
+                                        />
+                                    </View>
+                                )}
+                            />
+                            <View style={styles.viewerActions}>
+                                <TouchableOpacity style={styles.actionButton} onPress={handleShare}>
+                                    <ThemedText style={styles.actionText}>Share</ThemedText>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={styles.actionButton} onPress={handleEdit}>
+                                    <ThemedText style={styles.actionText}>Edit</ThemedText>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={[styles.actionButton, styles.deleteButton]} onPress={handleDelete}>
+                                    <ThemedText style={styles.actionText}>Delete</ThemedText>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </Modal>
                 </View>
-            </Modal>
-        </ThemedView>
+            </PinchGestureHandler>
+        </GestureHandlerRootView>
     );
 }
 
@@ -505,6 +711,84 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         fontSize: 16,
         color: '#333',
+    },
+    debugButton: {
+        backgroundColor: '#ff6b6b',
+        paddingHorizontal: 16,
+        paddingVertical: 8,
+        borderRadius: 20,
+        marginTop: 10,
+        alignSelf: 'center',
+    },
+    debugButtonText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    gridControls: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginVertical: 10,
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        backgroundColor: 'rgba(0, 0, 0, 0.05)',
+        borderRadius: 20,
+    },
+    gridInfoText: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#666',
+    },
+    gridButtons: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    gridButton: {
+        backgroundColor: '#f0f0f0',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: '#e0e0e0',
+    },
+    gridButtonActive: {
+        backgroundColor: '#8B5CF6',
+        borderColor: '#8B5CF6',
+    },
+    gridButtonText: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#333',
+    },
+    gridButtonTextActive: {
+        color: '#fff',
+    },
+    pinchInstructions: {
+        alignItems: 'center',
+        marginVertical: 8,
+        paddingHorizontal: 16,
+    },
+    pinchText: {
+        fontSize: 12,
+        color: '#666',
+        textAlign: 'center',
+        fontStyle: 'italic',
+    },
+    pinchIndicator: {
+        marginTop: 8,
+        paddingVertical: 4,
+        paddingHorizontal: 12,
+        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(139, 92, 246, 0.3)',
+    },
+    pinchIndicatorText: {
+        fontSize: 12,
+        color: '#8B5CF6',
+        textAlign: 'center',
+        fontWeight: '600',
     },
     loadingContainer: {
         flex: 1,
@@ -548,7 +832,6 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
     },
     imageContainer: {
-        width: imageSize,
         marginBottom: 15,
         backgroundColor: '#fff',
         borderRadius: 8,
@@ -562,10 +845,15 @@ const styles = StyleSheet.create({
         elevation: 5,
         overflow: 'hidden',
     },
+    imageTouchable: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
     image: {
         width: '100%',
-        height: imageSize,
         backgroundColor: '#f0f0f0',
+        borderRadius: 8,
     },
     imageInfo: {
         padding: 8,
@@ -659,14 +947,16 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-around',
         alignItems: 'center',
+        gap: 8,
     },
     actionButton: {
         backgroundColor: 'rgba(255,255,255,0.15)',
         paddingVertical: 10,
-        paddingHorizontal: 18,
+        paddingHorizontal: 12,
         borderRadius: 20,
-        minWidth: 90,
+        minWidth: 70,
         alignItems: 'center',
+        flex: 1,
     },
     deleteButton: {
         backgroundColor: 'rgba(255,59,48,0.35)',
