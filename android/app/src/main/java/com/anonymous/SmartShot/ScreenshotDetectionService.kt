@@ -205,8 +205,8 @@ class ScreenshotDetectionService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Edit action: deep link into app's edit screen
-        val deepLink = Uri.parse("smartshot://edit-screenshot?screenshotUri=" + Uri.encode(uri?.toString() ?: ""))
+        // Edit action: deep link into app's edit screen (triple slash improves compatibility on some devices)
+        val deepLink = Uri.parse("smartshot:///edit-screenshot?screenshotUri=" + Uri.encode(uri?.toString() ?: ""))
         val editIntent = Intent(Intent.ACTION_VIEW, deepLink).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             // Attach the URI as ClipData so read permission is actually granted

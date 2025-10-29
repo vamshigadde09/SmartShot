@@ -17,22 +17,16 @@ object PermissionManager {
     fun hasStoragePermission(context: Context): Boolean {
         return try {
             val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // Android 13+ uses READ_MEDIA_IMAGES
-                ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.READ_MEDIA_IMAGES
-                ) == PackageManager.PERMISSION_GRANTED
+                // Android 13+ uses granular media permissions
+                val img = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+                val vid = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+                img && vid
             } else {
-                // Android 12 and below use READ/WRITE_EXTERNAL_STORAGE for full access
-                val hasRead = ContextCompat.checkSelfPermission(
+                // Android 12 and below use READ_EXTERNAL_STORAGE
+                ContextCompat.checkSelfPermission(
                     context,
                     Manifest.permission.READ_EXTERNAL_STORAGE
                 ) == PackageManager.PERMISSION_GRANTED
-                val hasWrite = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                ) == PackageManager.PERMISSION_GRANTED
-                hasRead && hasWrite
             }
             Log.d(TAG, "Storage permission: $hasPermission")
             hasPermission
@@ -66,10 +60,10 @@ object PermissionManager {
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+                permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
                 permissions.add(Manifest.permission.POST_NOTIFICATIONS)
             } else {
                 permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-                permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
 
             // Always request microphone for audio notes

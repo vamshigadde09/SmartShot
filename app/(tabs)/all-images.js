@@ -30,8 +30,8 @@ try {
 }
 
 const { width } = Dimensions.get('window');
-const padding = 20;
-const spacing = 10;
+const padding = 0;
+const spacing = 0;
 
 // Enable LayoutAnimation for Android
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -75,6 +75,43 @@ const SmartImage = ({ uri, style, mode }) => {
             resizeMode={mode === 'cover' ? 'cover' : 'contain'}
         />
     );
+};
+
+const SmartMedia = ({ item, style }) => {
+    try {
+        if (item.mediaType === 'video') {
+            const VideoLib = require('expo-av').Video;
+            return (
+                <VideoLib
+                    source={{ uri: item.uri }}
+                    style={style}
+                    resizeMode="cover"
+                    shouldPlay={false}
+                    isMuted
+                />
+            );
+        }
+    } catch { }
+    return <SmartImage uri={item.uri} style={style} mode="cover" />;
+};
+
+const SmartMediaViewer = ({ item, style }) => {
+    try {
+        if (item.mediaType === 'video') {
+            const VideoLib = require('expo-av').Video;
+            return (
+                <VideoLib
+                    source={{ uri: item.uri }}
+                    style={style}
+                    resizeMode="contain"
+                    shouldPlay
+                    isMuted={false}
+                    useNativeControls
+                />
+            );
+        }
+    } catch { }
+    return <SmartImage uri={item.uri} style={style} mode="contain" />;
 };
 
 export default function AllImagesScreen() {
@@ -421,23 +458,22 @@ export default function AllImagesScreen() {
                 setEndCursor(newEndCursor);
                 setHasNextPage(hasMore);
             } else {
-                // Use native module - getScreenshots now returns ALL images (no filtering)
-                const screenshots = await NativeModules.ScreenshotModule.getScreenshots();
-                console.log('getScreenshots result (all images):', screenshots.length);
-                const filteredByBucket = bucketId
-                    ? screenshots.filter((img) => String(img.bucketId) === String(bucketId))
-                    : screenshots;
-                const allImages = filteredByBucket.map((img, index) => ({
-                    id: img.id || `img_${index}`,
-                    uri: img.uri,
-                    filename: img.name || `image_${index}.jpg`,
-                    creationTime: img.dateAdded || Date.now() / 1000,
-                    width: 1000,
-                    height: 1000,
+                // Use native module - merged images and videos
+                const media = await NativeModules.ScreenshotModule.getAllMedia();
+                console.log('getAllMedia result:', media.length);
+                const filtered = bucketId
+                    ? media.filter((m) => String(m.bucketId) === String(bucketId))
+                    : media;
+                const allMedia = filtered.map((m, index) => ({
+                    id: m.id || `m_${index}`,
+                    uri: m.uri,
+                    filename: m.name || `media_${index}`,
+                    creationTime: m.dateAdded || Date.now() / 1000,
+                    mediaType: m.mediaType || 'image',
                 }));
 
-                setImages(allImages);
-                setHasNextPage(false); // Native module loads all at once
+                setImages(allMedia);
+                setHasNextPage(false);
             }
         } catch (error) {
             console.error('Error loading images:', error);
@@ -504,24 +540,8 @@ export default function AllImagesScreen() {
                         style={[styles.imageTouchable, { width: imageSize, height: imageSize }]}
                         onPress={() => openViewer(index)}
                     >
-                        <SmartImage
-                            uri={image.uri}
-                            style={[styles.image, { width: imageSize, height: imageSize }]}
-                            mode="cover"
-                            onError={() => {
-                                console.error('Failed to load image:', image.uri);
-                            }}
-                        />
-                        {columns <= 3 && (
-                            <View style={styles.imageInfo}>
-                                <ThemedText style={styles.imageName} numberOfLines={1}>
-                                    {image.filename}
-                                </ThemedText>
-                                <ThemedText style={styles.imageDate}>
-                                    {formatDate(image.creationTime)}
-                                </ThemedText>
-                            </View>
-                        )}
+                        <SmartMedia item={image} style={[styles.image, { width: imageSize, height: imageSize }]} />
+                        {/* thumbnail only - no labels */}
                     </TouchableOpacity>
                 </Animated.View>
             );
@@ -651,11 +671,7 @@ export default function AllImagesScreen() {
                                 }}
                                 renderItem={({ item }) => (
                                     <View style={styles.viewerPage}>
-                                        <SmartImage
-                                            uri={item.uri}
-                                            style={styles.viewerImage}
-                                            mode="contain"
-                                        />
+                                        <SmartMediaViewer item={item} style={styles.viewerImage} />
                                     </View>
                                 )}
                             />
@@ -684,11 +700,12 @@ const styles = StyleSheet.create({
         backgroundColor: '#f5f5f5',
     },
     header: {
-        padding: 20,
         paddingTop: 60,
-        backgroundColor: '#fff',
-        borderBottomWidth: 1,
-        borderBottomColor: '#e0e0e0',
+        paddingBottom: 12,
+        paddingHorizontal: 20,
+        backgroundColor: 'rgba(255,255,255,0.9)',
+        borderBottomWidth: 0.5,
+        borderBottomColor: '#E5E7EB',
     },
     title: {
         textAlign: 'center',
@@ -824,26 +841,10 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         padding: 40,
     },
-    listContent: {
-        paddingBottom: 20,
-    },
-    columnWrapper: {
-        justifyContent: 'space-between',
-        paddingHorizontal: 10,
-    },
+    listContent: { paddingTop: 0, paddingBottom: 0 },
+    columnWrapper: { justifyContent: 'flex-start', paddingHorizontal: 2 },
     imageContainer: {
-        marginBottom: 15,
-        backgroundColor: '#fff',
-        borderRadius: 8,
-        shadowColor: '#000',
-        shadowOffset: {
-            width: 0,
-            height: 2,
-        },
-        shadowOpacity: 0.1,
-        shadowRadius: 3.84,
-        elevation: 5,
-        overflow: 'hidden',
+        margin: 2,
     },
     imageTouchable: {
         flex: 1,
@@ -854,19 +855,6 @@ const styles = StyleSheet.create({
         width: '100%',
         backgroundColor: '#f0f0f0',
         borderRadius: 8,
-    },
-    imageInfo: {
-        padding: 8,
-    },
-    imageName: {
-        fontSize: 10,
-        fontWeight: '500',
-        color: '#333',
-        marginBottom: 2,
-    },
-    imageDate: {
-        fontSize: 8,
-        color: '#666',
     },
     loadingFooter: {
         padding: 20,

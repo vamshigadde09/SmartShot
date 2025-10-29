@@ -21,7 +21,7 @@ import {
 } from 'react-native';
 
 const { width } = Dimensions.get('window');
-const imageSize = (width - 60) / 2; // 2 columns with padding
+const imageSize = width / 2; // tight 2-column grid, no gaps
 
 // Prefer expo-image (no peer conflict), then FastImage; fallback to RN Image
 let ExpoImageLib = null;
@@ -302,14 +302,6 @@ export default function GalleryScreen() {
                     console.log('Failed to load image:', screenshot.uri);
                 }}
             />
-            <View style={styles.imageInfo}>
-                <ThemedText style={styles.imageName} numberOfLines={1}>
-                    {screenshot.name}
-                </ThemedText>
-                <ThemedText style={styles.imageDate}>
-                    {formatDate(screenshot.dateAdded)}
-                </ThemedText>
-            </View>
         </TouchableOpacity>
     ), []);
 
@@ -439,25 +431,16 @@ export default function GalleryScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: '#121212',
     },
     header: {
-        padding: 20,
+        backgroundColor: '#121212',
         paddingTop: 60,
-        backgroundColor: '#fff',
-        borderBottomWidth: 1,
-        borderBottomColor: '#e0e0e0',
+        paddingBottom: 20,
+        paddingHorizontal: 20,
     },
-    title: {
-        textAlign: 'center',
-        marginBottom: 5,
-        color: '#8B5CF6',
-    },
-    subtitle: {
-        textAlign: 'center',
-        color: '#666',
-        fontSize: 14,
-    },
+    title: { color: '#FFF', fontSize: 20, fontWeight: '600' },
+    subtitle: { color: '#BBB' },
     scrollView: {
         flex: 1,
     },
@@ -492,41 +475,21 @@ const styles = StyleSheet.create({
     imageGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        padding: 10,
-        justifyContent: 'space-between',
+        padding: 0,
+        justifyContent: 'flex-start',
     },
     imageContainer: {
         width: imageSize,
-        marginBottom: 15,
-        backgroundColor: '#fff',
-        borderRadius: 8,
-        shadowColor: '#000',
-        shadowOffset: {
-            width: 0,
-            height: 2,
-        },
-        shadowOpacity: 0.1,
-        shadowRadius: 3.84,
-        elevation: 5,
+        margin: 2,
+        borderRadius: 12,
         overflow: 'hidden',
+        backgroundColor: '#1F1F1F',
     },
     image: {
         width: '100%',
         height: imageSize,
-        backgroundColor: '#f0f0f0',
-    },
-    imageInfo: {
-        padding: 8,
-    },
-    imageName: {
-        fontSize: 12,
-        fontWeight: '500',
-        color: '#333',
-        marginBottom: 2,
-    },
-    imageDate: {
-        fontSize: 10,
-        color: '#666',
+        backgroundColor: '#1F1F1F',
+        borderRadius: 0,
     },
     footer: {
         padding: 20,
@@ -632,19 +595,14 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: '500',
     },
-    columnWrapper: {
-        justifyContent: 'space-between',
-        paddingHorizontal: 10,
-    },
+    columnWrapper: { justifyContent: 'flex-start', paddingHorizontal: 0 },
     listEmptyContainer: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
         padding: 40,
     },
-    listContent: {
-        paddingBottom: 20,
-    },
+    listContent: { paddingTop: 0, paddingBottom: 0 },
     loadingFooter: {
         padding: 20,
         alignItems: 'center',

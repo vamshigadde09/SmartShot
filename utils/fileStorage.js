@@ -1,6 +1,70 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system';
 
 const STORAGE_FILE = FileSystem.documentDirectory + 'screenshots.json';
+const BACKUP_DIR_KEY = 'smartshot.backup.dirUri';
+const BACKUP_FILENAME = 'screenshots.json';
+
+// Android SAF helper
+const SAF = FileSystem.StorageAccessFramework;
+
+async function getPersistedBackupDirUri() {
+    try {
+        return await AsyncStorage.getItem(BACKUP_DIR_KEY);
+    } catch (_e) {
+        return null;
+    }
+}
+
+async function setPersistedBackupDirUri(dirUri) {
+    try {
+        if (dirUri) {
+            await AsyncStorage.setItem(BACKUP_DIR_KEY, dirUri);
+        } else {
+            await AsyncStorage.removeItem(BACKUP_DIR_KEY);
+        }
+    } catch (_e) { }
+}
+
+async function ensureBackupFile(dirUri) {
+    try {
+        const entries = await SAF.readDirectoryAsync(dirUri);
+        const existing = entries.find(u => u.toLowerCase().includes('/' + BACKUP_FILENAME.toLowerCase()));
+        if (existing) return existing;
+        // Create file if not exists
+        return await SAF.createFileAsync(dirUri, BACKUP_FILENAME, 'application/json');
+    } catch (e) {
+        console.error('Error ensuring backup file:', e);
+        throw e;
+    }
+}
+
+async function writeBackupJson(jsonString) {
+    try {
+        const dirUri = await getPersistedBackupDirUri();
+        if (!dirUri) return false;
+        const fileUri = await ensureBackupFile(dirUri);
+        await SAF.writeAsStringAsync(fileUri, jsonString);
+        return true;
+    } catch (e) {
+        console.warn('Backup write failed (continuing without external backup):', e?.message || e);
+        return false;
+    }
+}
+
+async function readBackupJson() {
+    try {
+        const dirUri = await getPersistedBackupDirUri();
+        if (!dirUri) return null;
+        const entries = await SAF.readDirectoryAsync(dirUri);
+        const fileUri = entries.find(u => u.toLowerCase().includes('/' + BACKUP_FILENAME.toLowerCase()));
+        if (!fileUri) return null;
+        return await SAF.readAsStringAsync(fileUri);
+    } catch (e) {
+        console.warn('Backup read failed:', e?.message || e);
+        return null;
+    }
+}
 
 export const initializeDatabase = async () => {
     try {
@@ -40,7 +104,10 @@ export const saveScreenshotData = async (data) => {
             screenshots.push(screenshotData);
         }
 
-        await FileSystem.writeAsStringAsync(STORAGE_FILE, JSON.stringify(screenshots));
+        const jsonString = JSON.stringify(screenshots);
+        await FileSystem.writeAsStringAsync(STORAGE_FILE, jsonString);
+        // Best-effort external backup
+        writeBackupJson(jsonString).catch(() => { });
         return true;
     } catch (error) {
         console.error('Error saving screenshot data:', error);
@@ -75,7 +142,10 @@ export const deleteScreenshotData = async (id) => {
         const screenshots = JSON.parse(fileContent);
         const filteredScreenshots = screenshots.filter(s => s.id !== id);
 
-        await FileSystem.writeAsStringAsync(STORAGE_FILE, JSON.stringify(filteredScreenshots));
+        const jsonString = JSON.stringify(filteredScreenshots);
+        await FileSystem.writeAsStringAsync(STORAGE_FILE, jsonString);
+        // Mirror deletion to external backup if configured
+        writeBackupJson(jsonString).catch(() => { });
         return true;
     } catch (error) {
         console.error('Error deleting screenshot data:', error);
@@ -113,5 +183,51 @@ export const searchScreenshots = async (query) => {
     } catch (error) {
         console.error('Error searching screenshots:', error);
         return [];
+    }
+};
+
+// User-facing APIs for managing backup directory and restoring data
+export const pickBackupDirectory = async () => {
+    try {
+        let res = null;
+        // Try to open Downloads as the initial location (Android)
+        try {
+            // Common initial tree URI for Downloads (primary storage)
+            const downloadsTree = 'content://com.android.externalstorage.documents/tree/primary%3ADownload';
+            res = await SAF.requestDirectoryPermissionsAsync(downloadsTree);
+        } catch (_initErr) {
+            // Fallback: no initial directory
+            res = await SAF.requestDirectoryPermissionsAsync();
+        }
+        if (res.granted && res.directoryUri) {
+            await setPersistedBackupDirUri(res.directoryUri);
+            // Ensure the backup file exists immediately
+            await ensureBackupFile(res.directoryUri);
+            return { granted: true };
+        }
+        return { granted: false };
+    } catch (error) {
+        console.error('Error picking backup directory:', error);
+        return { granted: false, error };
+    }
+};
+
+export const hasBackupDirectory = async () => {
+    const uri = await getPersistedBackupDirUri();
+    return !!uri;
+};
+
+export const restoreFromBackup = async () => {
+    try {
+        const jsonString = await readBackupJson();
+        if (!jsonString) return false;
+        // Validate JSON
+        const data = JSON.parse(jsonString);
+        if (!Array.isArray(data)) return false;
+        await FileSystem.writeAsStringAsync(STORAGE_FILE, JSON.stringify(data));
+        return true;
+    } catch (e) {
+        console.error('Error restoring from backup:', e);
+        return false;
     }
 };

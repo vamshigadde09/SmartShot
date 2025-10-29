@@ -71,6 +71,7 @@ export default function EditScreenshotScreen() {
     const [isTodo, setIsTodo] = useState(false);
     const [tags, setTags] = useState('');
     const [loading, setLoading] = useState(true);
+    const [originalFileName, setOriginalFileName] = useState('');
 
     // Audio recording states
     const [recording, setRecording] = useState(null);
@@ -502,7 +503,9 @@ export default function EditScreenshotScreen() {
         if (!screenshotId) {
             setLoading(false);
             // New entry: prefill name from URI
-            setImageName(getFileNameFromUri(screenshotUri));
+            const base = getFileNameFromUri(screenshotUri);
+            setImageName(base);
+            setOriginalFileName(base);
             return;
         }
 
@@ -518,6 +521,7 @@ export default function EditScreenshotScreen() {
                         setScreenshotData(data);
                         setText(data.text || '');
                         setImageName(data.name || getFileNameFromUri(data.uri || screenshotUri));
+                        setOriginalFileName(getFileNameFromUri(data.uri || screenshotUri));
                         setAudio(data.audio || '');
                         setReminder(data.reminder || '');
                         setIsTodo(!!data.isTodo);
@@ -571,6 +575,19 @@ export default function EditScreenshotScreen() {
                 }
             } catch (fileError) {
                 console.log('File check failed, starting with empty array');
+            }
+
+            // If user changed the name, attempt to rename the underlying media file (Android only)
+            try {
+                if (Platform.OS === 'android' && screenshotUri && imageName && imageName.trim()) {
+                    const desired = imageName.trim();
+                    if (desired !== originalFileName) {
+                        await NativeModules.ScreenshotModule?.renameImage?.(screenshotUri, desired);
+                        setOriginalFileName(desired);
+                    }
+                }
+            } catch (renameErr) {
+                console.warn('Rename failed (keeping metadata only):', renameErr?.message || renameErr);
             }
 
             const screenshotToSave = {

@@ -15,10 +15,6 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.Manifest
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.Base64
-import java.io.OutputStream
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -26,6 +22,10 @@ import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.Arguments
+import android.content.ContentValues
+import android.content.ContentUris
+import android.media.MediaScannerConnection
+import java.io.File
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -381,6 +381,220 @@ class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBase
     }
 
     @ReactMethod
+    fun getAllMedia(promise: Promise) {
+        Log.d("ScreenshotModule", "Getting all media (images + videos)...")
+        try {
+            val items = mutableListOf<WritableMap>()
+
+            // Query images
+            run {
+                val projection = arrayOf(
+                    MediaStore.Images.Media._ID,
+                    MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+                    MediaStore.Images.Media.BUCKET_ID,
+                    MediaStore.Images.Media.DATA,
+                    MediaStore.Images.Media.DATE_ADDED,
+                    MediaStore.Images.Media.MIME_TYPE,
+                    MediaStore.Images.Media.SIZE
+                )
+                val selection = "${MediaStore.Images.Media.MIME_TYPE} LIKE 'image/%'"
+                val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+                val cursor = context.contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    projection, selection, null, sortOrder
+                )
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        try {
+                            val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                            val displayName = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME))
+                            val bucketName = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME))
+                            val bucketId = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID))
+                            val data = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                            val dateAdded = it.getLong(it.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED))
+                            val mimeType = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE))
+                            val size = it.getLong(it.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE))
+                            val map = Arguments.createMap()
+                            map.putString("id", id.toString())
+                            map.putString("name", displayName)
+                            if (bucketName != null) map.putString("bucketName", bucketName)
+                            if (bucketId != null) map.putString("bucketId", bucketId)
+                            map.putString("uri", "file://$data")
+                            map.putDouble("dateAdded", dateAdded.toDouble())
+                            map.putString("mimeType", mimeType)
+                            map.putDouble("size", size.toDouble())
+                            map.putString("mediaType", "image")
+                            items.add(map)
+                        } catch (e: Exception) { Log.e("ScreenshotModule", "Error reading image row: ${e.message}") }
+                    }
+                }
+            }
+
+            // Query videos
+            run {
+                val projection = arrayOf(
+                    MediaStore.Video.Media._ID,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+                    MediaStore.Video.Media.BUCKET_ID,
+                    MediaStore.Video.Media.DATA,
+                    MediaStore.Video.Media.DATE_ADDED,
+                    MediaStore.Video.Media.MIME_TYPE,
+                    MediaStore.Video.Media.SIZE
+                )
+                val selection = "${MediaStore.Video.Media.MIME_TYPE} LIKE 'video/%'"
+                val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+                val cursor = context.contentResolver.query(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    projection, selection, null, sortOrder
+                )
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        try {
+                            val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Video.Media._ID))
+                            val displayName = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME))
+                            val bucketName = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME))
+                            val bucketId = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_ID))
+                            val data = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.DATA))
+                            val dateAdded = it.getLong(it.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED))
+                            val mimeType = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE))
+                            val size = it.getLong(it.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE))
+                            val map = Arguments.createMap()
+                            map.putString("id", id.toString())
+                            map.putString("name", displayName)
+                            if (bucketName != null) map.putString("bucketName", bucketName)
+                            if (bucketId != null) map.putString("bucketId", bucketId)
+                            map.putString("uri", "file://$data")
+                            map.putDouble("dateAdded", dateAdded.toDouble())
+                            map.putString("mimeType", mimeType)
+                            map.putDouble("size", size.toDouble())
+                            map.putString("mediaType", "video")
+                            items.add(map)
+                        } catch (e: Exception) { Log.e("ScreenshotModule", "Error reading video row: ${e.message}") }
+                    }
+                }
+            }
+
+            // Sort merged list by dateAdded desc
+            val result = Arguments.createArray()
+            items.sortByDescending { it.getDouble("dateAdded") }
+            for (it in items) { result.pushMap(it) }
+            promise.resolve(result)
+        } catch (e: Exception) {
+            Log.e("ScreenshotModule", "Error getting all media: ${e.message}")
+            promise.reject("MEDIA_ERROR", "Error getting all media: ${e.message}")
+        }
+    }
+
+    @ReactMethod
+    fun renameImage(fileUriOrPath: String, newDisplayNameRaw: String, promise: Promise) {
+        try {
+            if (!PermissionManager.hasStoragePermission(context)) {
+                promise.reject("NO_PERMISSION", "Storage permission not granted")
+                return
+            }
+
+            val resolver = context.contentResolver
+
+            // Normalize inputs
+            val uri = try {
+                if (fileUriOrPath.startsWith("content://") || fileUriOrPath.startsWith("file://")) {
+                    Uri.parse(fileUriOrPath)
+                } else {
+                    Uri.fromFile(File(fileUriOrPath))
+                }
+            } catch (e: Exception) { null }
+
+            // Figure out current mime and extension
+            var currentDisplayName = ""
+            var currentMime: String? = null
+            var dataPath: String? = null
+            val projection = arrayOf(
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.MIME_TYPE,
+                MediaStore.Images.Media.DATA,
+                MediaStore.Images.Media._ID
+            )
+
+            // Query by Uri if it's a content uri; otherwise attempt query by file path
+            var contentUri: Uri? = null
+            if (uri != null && uri.scheme == "content") {
+                resolver.query(uri, projection, null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        currentDisplayName = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME))
+                        currentMime = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE))
+                        dataPath = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                        val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                        contentUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                    }
+                }
+            }
+
+            if (contentUri == null) {
+                // Try by DATA path
+                val path = if (uri?.scheme == "file") uri.path else fileUriOrPath
+                val selection = MediaStore.Images.Media.DATA + "=?"
+                resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, selection, arrayOf(path), null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        currentDisplayName = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME))
+                        currentMime = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE))
+                        dataPath = c.getString(c.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                        val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+                        contentUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                    }
+                }
+            }
+
+            if (contentUri == null && dataPath == null) {
+                promise.reject("NOT_FOUND", "Image not found in MediaStore")
+                return
+            }
+
+            // Preserve extension if user omitted it
+            val ext = try {
+                val n = (currentDisplayName.ifEmpty { dataPath ?: "" })
+                val dot = n.lastIndexOf('.')
+                if (dot >= 0) n.substring(dot) else ""
+            } catch (e: Exception) { "" }
+            val sanitized = newDisplayNameRaw.replace("[\\\\/:*?\"<>|]".toRegex(), " ").trim()
+            val targetName = if (sanitized.endsWith(ext) || ext.isEmpty()) sanitized else (sanitized + ext)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && contentUri != null) {
+                val values = ContentValues().apply { put(MediaStore.Images.Media.DISPLAY_NAME, targetName) }
+                val rows = resolver.update(contentUri!!, values, null, null)
+                if (rows > 0) {
+                    promise.resolve(true)
+                } else {
+                    promise.reject("RENAME_FAILED", "Update affected 0 rows")
+                }
+                return
+            }
+
+            // Fallback for older versions: rename the actual file, then scan
+            val fromPath = dataPath ?: uri?.path
+            if (fromPath == null) {
+                promise.reject("NO_PATH", "Could not resolve file path")
+                return
+            }
+            val fromFile = File(fromPath)
+            val destFile = File(fromFile.parentFile, targetName)
+            val ok = fromFile.renameTo(destFile)
+            if (!ok) {
+                promise.reject("RENAME_FAILED", "File renameTo returned false")
+                return
+            }
+            try {
+                // Scan new file so gallery updates
+                MediaScannerConnection.scanFile(context, arrayOf(destFile.absolutePath), null, null)
+            } catch (_: Exception) { }
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("RENAME_ERROR", e.message)
+        }
+    }
+
+    @ReactMethod
     fun getImageAlbums(promise: Promise) {
         Log.d("ScreenshotModule", "Getting image albums...")
         try {
@@ -451,6 +665,94 @@ class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBase
         } catch (e: Exception) {
             Log.e("ScreenshotModule", "Error getting albums: ${e.message}")
             promise.reject("ALBUMS_ERROR", "Error getting albums: ${e.message}")
+        }
+    }
+
+    @ReactMethod
+    fun getMediaAlbums(promise: Promise) {
+        Log.d("ScreenshotModule", "Getting media albums (images + videos)...")
+        try {
+            val resolver = context.contentResolver
+            val bucketIdToAlbum = HashMap<String, WritableMap>()
+
+            fun addRow(bucketId: String, bucketName: String, dateAdded: Long, data: String) {
+                val key = bucketId
+                val existing = bucketIdToAlbum[key]
+                if (existing == null) {
+                    val album = Arguments.createMap()
+                    album.putString("id", key)
+                    album.putString("name", bucketName)
+                    album.putInt("count", 1)
+                    album.putDouble("latest", dateAdded.toDouble())
+                    album.putString("coverUri", "file://$data")
+                    bucketIdToAlbum[key] = album
+                } else {
+                    val count = existing.getInt("count") + 1
+                    existing.putInt("count", count)
+                    val prevLatest = existing.getDouble("latest")
+                    if (dateAdded.toDouble() >= prevLatest) {
+                        existing.putDouble("latest", dateAdded.toDouble())
+                        existing.putString("coverUri", "file://$data")
+                    }
+                }
+            }
+
+            // Images
+            run {
+                val projection = arrayOf(
+                    MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+                    MediaStore.Images.Media.BUCKET_ID,
+                    MediaStore.Images.Media.DATE_ADDED,
+                    MediaStore.Images.Media.DATA
+                )
+                val selection = "${MediaStore.Images.Media.MIME_TYPE} LIKE 'image/%'"
+                val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+                val cursor = resolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, selection, null, sortOrder)
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        try {
+                            val bucketName = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)) ?: "Unknown"
+                            val bucketId = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_ID)) ?: bucketName
+                            val dateAdded = it.getLong(it.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED))
+                            val data = it.getString(it.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                            addRow(bucketId, bucketName, dateAdded, data)
+                        } catch (e: Exception) { Log.e("ScreenshotModule", "Error reading image album row: ${e.message}") }
+                    }
+                }
+            }
+
+            // Videos
+            run {
+                val projection = arrayOf(
+                    MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+                    MediaStore.Video.Media.BUCKET_ID,
+                    MediaStore.Video.Media.DATE_ADDED,
+                    MediaStore.Video.Media.DATA
+                )
+                val selection = "${MediaStore.Video.Media.MIME_TYPE} LIKE 'video/%'"
+                val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+                val cursor = resolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, selection, null, sortOrder)
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        try {
+                            val bucketName = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)) ?: "Unknown"
+                            val bucketId = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.BUCKET_ID)) ?: bucketName
+                            val dateAdded = it.getLong(it.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED))
+                            val data = it.getString(it.getColumnIndexOrThrow(MediaStore.Video.Media.DATA))
+                            addRow(bucketId, bucketName, dateAdded, data)
+                        } catch (e: Exception) { Log.e("ScreenshotModule", "Error reading video album row: ${e.message}") }
+                    }
+                }
+            }
+
+            val result = Arguments.createArray()
+            val sorted = bucketIdToAlbum.values.sortedByDescending { it.getDouble("latest") }
+            for (album in sorted) { result.pushMap(album) }
+            promise.resolve(result)
+            Log.d("ScreenshotModule", "Found ${sorted.size} media albums")
+        } catch (e: Exception) {
+            Log.e("ScreenshotModule", "Error getting media albums: ${e.message}")
+            promise.reject("ALBUMS_ERROR", "Error getting media albums: ${e.message}")
         }
     }
     
@@ -683,74 +985,6 @@ class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBase
             
         } catch (e: Exception) {
             Log.e("ScreenshotModule", "Error showing notification: ${e.message}")
-        }
-    }
-
-    @ReactMethod
-    fun saveImageToGallery(base64Image: String, fileName: String, subfolder: String?, promise: Promise) {
-        try {
-            // Decode base64 into bytes
-            val imageBytes = Base64.decode(base64Image, Base64.DEFAULT)
-            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                ?: run {
-                    promise.reject("DECODE_ERROR", "Failed to decode image data")
-                    return
-                }
-
-            // Prepare MediaStore values
-            val resolver = context.contentResolver
-            val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            }
-
-            val values = android.content.ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val folder = (subfolder?.trim()?.takeIf { it.isNotEmpty() } ?: "SmartShot")
-                    put(MediaStore.Images.Media.RELATIVE_PATH, "${MediaStore.Images.Media.RELATIVE_PATH}".let { _ -> "Pictures/" + folder })
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
-            }
-
-            val uri = resolver.insert(collection, values)
-                ?: run {
-                    promise.reject("WRITE_ERROR", "Failed to insert into MediaStore")
-                    return
-                }
-
-            var out: OutputStream? = null
-            try {
-                out = resolver.openOutputStream(uri)
-                if (out == null) {
-                    promise.reject("STREAM_ERROR", "Failed to open output stream")
-                    return
-                }
-                // Save as PNG to preserve quality and transparency if any
-                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
-                    promise.reject("COMPRESS_ERROR", "Failed to write image data")
-                    return
-                }
-            } finally {
-                try { out?.close() } catch (_: Exception) {}
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val update = android.content.ContentValues().apply {
-                    put(MediaStore.Images.Media.IS_PENDING, 0)
-                }
-                resolver.update(uri, update, null, null)
-            }
-
-            promise.resolve(uri.toString())
-        } catch (e: SecurityException) {
-            Log.e("ScreenshotModule", "SecurityException saving image: ${e.message}")
-            promise.reject("SECURITY_ERROR", e.message)
-        } catch (e: Exception) {
-            Log.e("ScreenshotModule", "Unexpected error saving image: ${e.message}")
-            promise.reject("SAVE_ERROR", e.message)
         }
     }
 }

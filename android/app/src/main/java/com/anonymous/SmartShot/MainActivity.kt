@@ -51,6 +51,7 @@ class MainActivity : ReactActivity() {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         if (!PermissionManager.hasStoragePermission(this)) {
           permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+          permissions.add(Manifest.permission.READ_MEDIA_VIDEO)
         }
         if (!PermissionManager.hasNotificationPermission(this)) {
           permissions.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -58,7 +59,6 @@ class MainActivity : ReactActivity() {
       } else {
         if (!PermissionManager.hasStoragePermission(this)) {
           permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-          permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
       }
       // Microphone for audio notes

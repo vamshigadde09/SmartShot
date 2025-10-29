@@ -1,42 +1,30 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import * as FileSystem from 'expo-file-system';
+import { AppTheme as theme } from '@/constants/theme';
+import { getAllScreenshots, saveScreenshotData } from '@/utils/fileStorage';
 import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
     Alert,
     FlatList,
     Image,
+    Modal,
     RefreshControl,
     StyleSheet,
+    TextInput,
     TouchableOpacity,
-    View,
+    View
 } from 'react-native';
 
-// Use file storage for data persistence
-const STORAGE_FILE = FileSystem.documentDirectory + 'screenshots.json';
-const FALLBACK_STORAGE_FILE = FileSystem.cacheDirectory + 'screenshots.json';
-
-// Get the appropriate storage file path
-const getStorageFile = async () => {
-    try {
-        const dirInfo = await FileSystem.getInfoAsync(FileSystem.documentDirectory);
-        if (dirInfo.exists) {
-            return STORAGE_FILE;
-        } else {
-            return FALLBACK_STORAGE_FILE;
-        }
-    } catch (error) {
-        console.error('Error determining storage file:', error);
-        return FALLBACK_STORAGE_FILE;
-    }
-};
 
 export default function TodoListScreen() {
     const [todos, setTodos] = useState([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [busyId, setBusyId] = useState(null);
+    const [createVisible, setCreateVisible] = useState(false);
+    const [newText, setNewText] = useState('');
+    const [newTags, setNewTags] = useState('');
 
     useEffect(() => {
         loadTodos();
@@ -44,14 +32,7 @@ export default function TodoListScreen() {
 
     const loadTodos = async () => {
         try {
-            let allScreenshots = [];
-            const storageFile = await getStorageFile();
-            const fileInfo = await FileSystem.getInfoAsync(storageFile);
-            if (fileInfo.exists) {
-                const fileContent = await FileSystem.readAsStringAsync(storageFile);
-                allScreenshots = JSON.parse(fileContent);
-            }
-
+            const allScreenshots = await getAllScreenshots();
             const todoScreenshots = allScreenshots.filter(screenshot => screenshot.isTodo);
             setTodos(todoScreenshots);
         } catch (error) {
@@ -81,19 +62,13 @@ export default function TodoListScreen() {
     const updateTodoFlag = async (id, value) => {
         try {
             setBusyId(id);
-            const storageFile = await getStorageFile();
-            const fileInfo = await FileSystem.getInfoAsync(storageFile);
-            if (!fileInfo.exists) return;
-            const content = await FileSystem.readAsStringAsync(storageFile);
-            const arr = JSON.parse(content);
-            const idx = arr.findIndex((s) => s.id === id);
-            if (idx >= 0) {
-                arr[idx].isTodo = value;
-                arr[idx].updatedAt = new Date().toISOString();
-                await FileSystem.writeAsStringAsync(storageFile, JSON.stringify(arr));
-            }
-            // refresh local list
-            setTodos(arr.filter((s) => s.isTodo));
+            const all = await getAllScreenshots();
+            const target = all.find((s) => s.id === id);
+            if (!target) return;
+            const updated = { ...target, isTodo: value, updatedAt: new Date().toISOString() };
+            await saveScreenshotData(updated);
+            const refreshed = await getAllScreenshots();
+            setTodos(refreshed.filter((s) => s.isTodo));
         } catch (e) {
             console.error('Error updating todo flag:', e);
             Alert.alert('Error', 'Failed to update todo');
@@ -120,11 +95,17 @@ export default function TodoListScreen() {
             onPress={() => openScreenshot(item)}
         >
             <View style={styles.imageContainer}>
-                <Image
-                    source={{ uri: item.uri }}
-                    style={styles.thumbnail}
-                    resizeMode="cover"
-                />
+                {item.uri ? (
+                    <Image
+                        source={{ uri: item.uri }}
+                        style={styles.thumbnail}
+                        resizeMode="cover"
+                    />
+                ) : (
+                    <View style={[styles.thumbnail, styles.placeholder]}>
+                        <ThemedText style={styles.placeholderText}>TODO</ThemedText>
+                    </View>
+                )}
             </View>
             <View style={styles.contentContainer}>
                 <ThemedText style={styles.todoTitle} numberOfLines={2}>
@@ -159,6 +140,29 @@ export default function TodoListScreen() {
             </View>
         </TouchableOpacity>
     );
+
+    const onCreateTodo = async () => {
+        try {
+            const now = new Date().toISOString();
+            const id = 'todo-' + Date.now();
+            const newItem = {
+                id,
+                isTodo: true,
+                text: newText.trim(),
+                tags: newTags.trim(),
+                createdAt: now,
+                updatedAt: now,
+            };
+            await saveScreenshotData(newItem);
+            setCreateVisible(false);
+            setNewText('');
+            setNewTags('');
+            await loadTodos();
+        } catch (e) {
+            console.error('Error creating todo:', e);
+            Alert.alert('Error', 'Failed to create todo');
+        }
+    };
 
     if (loading) {
         return (
@@ -201,6 +205,53 @@ export default function TodoListScreen() {
                     contentContainerStyle={styles.listContainer}
                 />
             )}
+
+            {/* Create FAB */}
+            <TouchableOpacity style={styles.fab} onPress={() => setCreateVisible(true)}>
+                <ThemedText style={styles.fabText}>＋</ThemedText>
+            </TouchableOpacity>
+
+            {/* Create Modal */}
+            <Modal
+                transparent
+                visible={createVisible}
+                animationType="fade"
+                onRequestClose={() => setCreateVisible(false)}
+            >
+                <View style={styles.modalBackdrop}>
+                    <View style={styles.modalCard}>
+                        <ThemedText style={styles.modalTitle}>New Todo</ThemedText>
+                        <View style={{ height: 12 }} />
+                        <TextInput
+                            style={styles.input}
+                            placeholder="What to do?"
+                            placeholderTextColor="#999"
+                            value={newText}
+                            onChangeText={setNewText}
+                        />
+                        <View style={{ height: 8 }} />
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Tags (optional)"
+                            placeholderTextColor="#999"
+                            value={newTags}
+                            onChangeText={setNewTags}
+                        />
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity style={[styles.modalButton, styles.cancelBtn]} onPress={() => setCreateVisible(false)}>
+                                <ThemedText style={styles.modalBtnText}>Cancel</ThemedText>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.modalButton, styles.saveBtn]}
+                                onPress={onCreateTodo}
+                                disabled={!newText.trim()}
+                            >
+                                <ThemedText style={styles.modalBtnText}>Save</ThemedText>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
         </ThemedView>
     );
 }
@@ -208,7 +259,7 @@ export default function TodoListScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: theme.bg,
     },
     header: {
         padding: 20,
@@ -252,19 +303,18 @@ const styles = StyleSheet.create({
         textAlign: 'center',
     },
     listContainer: {
-        padding: 20,
+        paddingHorizontal: 14,
+        paddingTop: 12,
+        paddingBottom: 20,
     },
     todoItem: {
-        backgroundColor: '#fff',
-        borderRadius: 12,
+        backgroundColor: theme.card,
+        borderRadius: theme.radius,
         padding: 16,
         marginBottom: 12,
         flexDirection: 'row',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        alignItems: 'center',
+        ...theme.shadow,
     },
     imageContainer: {
         width: 80,
@@ -276,6 +326,8 @@ const styles = StyleSheet.create({
     thumbnail: {
         width: '100%',
         height: '100%',
+        borderRadius: 10,
+        backgroundColor: '#f0f0f0',
     },
     contentContainer: {
         flex: 1,
@@ -328,5 +380,81 @@ const styles = StyleSheet.create({
         color: '#fff',
         fontWeight: '600',
         fontSize: 12,
+    },
+    placeholder: {
+        backgroundColor: '#f0e9ff',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    placeholderText: {
+        color: '#8B5CF6',
+        fontWeight: '700',
+    },
+    fab: {
+        position: 'absolute',
+        bottom: 24,
+        right: 24,
+        backgroundColor: theme.accent,
+        width: 60,
+        height: 60,
+        borderRadius: 30,
+        alignItems: 'center',
+        justifyContent: 'center',
+        ...theme.shadow,
+    },
+    fabText: {
+        color: '#fff',
+        fontSize: 32,
+        lineHeight: 32,
+        fontWeight: 'bold',
+    },
+    modalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.35)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 24,
+    },
+    modalCard: {
+        width: '100%',
+        backgroundColor: '#fff',
+        borderRadius: 12,
+        padding: 16,
+    },
+    modalTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: '#333',
+        textAlign: 'center',
+    },
+    input: {
+        borderWidth: 1,
+        borderColor: '#e0e0e0',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        color: '#333',
+        backgroundColor: '#fafafa',
+    },
+    modalActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        gap: 10,
+        marginTop: 14,
+    },
+    modalButton: {
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 8,
+    },
+    cancelBtn: {
+        backgroundColor: '#e0e0e0',
+    },
+    saveBtn: {
+        backgroundColor: '#8B5CF6',
+    },
+    modalBtnText: {
+        color: '#fff',
+        fontWeight: '700',
     },
 });

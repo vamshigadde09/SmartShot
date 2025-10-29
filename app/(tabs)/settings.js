@@ -1,5 +1,7 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { AppTheme as theme } from '@/constants/theme';
+import { hasBackupDirectory, pickBackupDirectory, restoreFromBackup } from '@/utils/fileStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Linking from 'expo-linking';
 import React, { useEffect, useState } from 'react';
@@ -20,10 +22,12 @@ export default function SettingsScreen() {
     const [notificationPermission, setNotificationPermission] = useState(false);
     const [microphonePermission, setMicrophonePermission] = useState(false);
     const [backgroundService, setBackgroundService] = useState(true);
+    const [backupConfigured, setBackupConfigured] = useState(false);
     const BG_PREF_KEY = 'backgroundServiceEnabled';
 
     useEffect(() => {
         checkPermissions();
+        checkBackup();
     }, []);
 
     const checkPermissions = async () => {
@@ -73,6 +77,38 @@ export default function SettingsScreen() {
             }
         } catch (error) {
             console.error('Error checking permissions:', error);
+        }
+    };
+
+    const checkBackup = async () => {
+        try {
+            const ok = await hasBackupDirectory();
+            setBackupConfigured(ok);
+        } catch (_) {
+            setBackupConfigured(false);
+        }
+    };
+
+    const onPickBackup = async () => {
+        const res = await pickBackupDirectory();
+        if (res?.granted) {
+            setBackupConfigured(true);
+            Alert.alert('Backup Folder', 'Backup folder selected. Your edits will mirror there automatically.');
+        } else {
+            Alert.alert('Cancelled', 'No folder selected. You can set it later.');
+        }
+    };
+
+    const onRestoreBackup = async () => {
+        try {
+            const ok = await restoreFromBackup();
+            if (ok) {
+                Alert.alert('Restored', 'Data restored from backup.');
+            } else {
+                Alert.alert('Restore', 'No backup file found in the selected folder.');
+            }
+        } catch (e) {
+            Alert.alert('Error', 'Failed to restore from backup.');
         }
     };
 
@@ -155,7 +191,7 @@ export default function SettingsScreen() {
                 PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
                 {
                     title: 'Microphone Permission',
-                    message: 'SmartShot needs microphone access to record audio notes.',
+                    message: 'SmartShot needs microphone access to record audio  notes.',
                     buttonPositive: 'Allow',
                     buttonNegative: 'Deny',
                 }
@@ -326,7 +362,7 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: theme.bg,
     },
     scrollView: {
         flex: 1,
@@ -349,19 +385,12 @@ const styles = StyleSheet.create({
         fontSize: 14,
     },
     section: {
-        marginTop: 20,
-        backgroundColor: '#fff',
+        backgroundColor: theme.card,
+        marginVertical: 12,
         marginHorizontal: 16,
-        borderRadius: 12,
+        borderRadius: theme.radius,
         padding: 16,
-        shadowColor: '#000',
-        shadowOffset: {
-            width: 0,
-            height: 2,
-        },
-        shadowOpacity: 0.1,
-        shadowRadius: 3.84,
-        elevation: 5,
+        ...theme.shadow,
     },
     sectionTitle: {
         fontSize: 18,
@@ -374,8 +403,8 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         alignItems: 'center',
         paddingVertical: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: '#f0f0f0',
+        borderBottomWidth: 0.5,
+        borderBottomColor: theme.border,
     },
     permissionInfo: {
         flex: 1,

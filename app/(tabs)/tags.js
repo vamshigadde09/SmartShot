@@ -1,5 +1,6 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { AppTheme as theme } from '@/constants/theme';
 import * as FileSystem from 'expo-file-system/legacy';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -78,14 +79,20 @@ export default function TagsScreen() {
     };
 
     const renderItem = ({ item }) => (
-        <TouchableOpacity style={styles.item} onPress={() => openTag(item)}>
-            <ThemedText style={styles.tagName}>#{item.name}</ThemedText>
-            <ThemedText style={styles.count}>{item.count}</ThemedText>
+        <TouchableOpacity style={styles.card} onPress={() => openTag(item)}>
+            <View style={styles.thumbWrap}>
+                <View style={styles.thumb} />
+            </View>
+            <ThemedText style={styles.cardTitle} numberOfLines={1}>{item.name}</ThemedText>
         </TouchableOpacity>
     );
 
     return (
         <ThemedView style={styles.container}>
+            <View style={styles.header}>
+                <ThemedText type="title" style={styles.title}>Tag</ThemedText>
+                <ThemedText style={styles.subtitle}>{tags.length} tag{tags.length !== 1 ? 's' : ''}</ThemedText>
+            </View>
             {loading && tags.length === 0 ? (
                 <View style={styles.loadingContainer}>
                     <ActivityIndicator size="large" color="#8B5CF6" />
@@ -96,7 +103,9 @@ export default function TagsScreen() {
                     data={tags}
                     keyExtractor={(item) => item.name}
                     renderItem={renderItem}
-                    contentContainerStyle={tags.length === 0 ? styles.emptyContainer : styles.list}
+                    numColumns={2}
+                    columnWrapperStyle={styles.columnWrapper}
+                    contentContainerStyle={tags.length === 0 ? styles.emptyContainer : styles.grid}
                     refreshing={refreshing}
                     onRefresh={onRefresh}
                     ListEmptyComponent={
@@ -112,25 +121,65 @@ export default function TagsScreen() {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f5f5f5' },
+    container: { flex: 1, backgroundColor: theme.bg },
+    header: {
+        padding: 20,
+        paddingTop: 60,
+        backgroundColor: '#fff',
+        borderBottomWidth: 1,
+        borderBottomColor: '#e0e0e0',
+    },
+    title: {
+        textAlign: 'center',
+        marginBottom: 5,
+        color: '#8B5CF6',
+        fontSize: 20,
+        fontWeight: '700',
+    },
+    subtitle: {
+        textAlign: 'center',
+        color: '#666',
+        fontSize: 14,
+    },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
     loadingText: { marginTop: 10, color: '#666' },
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
     emptyText: { fontSize: 18, fontWeight: 'bold', color: '#666', marginBottom: 10 },
     emptySubtext: { fontSize: 14, color: '#999', textAlign: 'center' },
-    list: { padding: 12 },
-    item: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
+    grid: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 20 },
+    columnWrapper: { justifyContent: 'space-between', marginBottom: 14 },
+    card: {
+        flex: 1,
+        backgroundColor: theme.card,
+        borderRadius: theme.radius,
+        paddingVertical: 20,
         alignItems: 'center',
-        backgroundColor: '#fff',
-        borderRadius: 10,
-        padding: 14,
-        marginBottom: 10,
-        elevation: 2,
+        justifyContent: 'center',
+        marginHorizontal: 4,
+        ...theme.shadow,
     },
-    tagName: { fontWeight: '600', color: '#333' },
-    count: { color: '#666' },
+    thumbWrap: {
+        height: 80,
+        borderRadius: 12,
+        backgroundColor: '#e9e9ef',
+        overflow: 'hidden',
+        marginBottom: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    thumb: {
+        width: '80%',
+        height: '80%',
+        borderRadius: 10,
+        backgroundColor: '#ddd',
+    },
+    cardTitle: { textAlign: 'center', color: theme.textPrimary, fontWeight: '600', fontSize: 16 },
+    tagPill: {
+        backgroundColor: theme.accent + '15',
+        borderRadius: 20,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+    },
 });
 
 

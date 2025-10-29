@@ -1,11 +1,11 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { AppTheme as theme } from '@/constants/theme';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
-    Alert,
-    FlatList,
+    Alert, Animated, FlatList,
     Image,
     NativeModules,
     PermissionsAndroid,
@@ -58,7 +58,7 @@ export default function AlbumsScreen() {
                     return;
                 }
             }
-            const rows = await mod.getImageAlbums();
+            const rows = await mod.getMediaAlbums();
             setAlbums(rows || []);
         } catch (e) {
             Alert.alert('Error', 'Failed to load albums');
@@ -76,23 +76,38 @@ export default function AlbumsScreen() {
 
     const openAlbum = (album) => {
         router.push({
-            pathname: '/(tabs)/all-images',
+            pathname: '/(tabs)/album-images',
             params: { bucketId: album.id, title: album.name }
         });
     };
 
-    const renderAlbum = ({ item }) => (
-        <TouchableOpacity style={styles.item} onPress={() => openAlbum(item)}>
-            <Image source={{ uri: item.coverUri }} style={styles.cover} resizeMode="cover" />
-            <View style={styles.meta}>
-                <ThemedText style={styles.name} numberOfLines={1}>{item.name}</ThemedText>
-                <ThemedText style={styles.count}>{item.count} items</ThemedText>
-            </View>
-        </TouchableOpacity>
-    );
+    const renderAlbum = ({ item }) => {
+        const scale = new Animated.Value(1);
+        const onPressIn = () => Animated.spring(scale, { toValue: 0.98, useNativeDriver: true }).start();
+        const onPressOut = () => Animated.spring(scale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
+        return (
+            <Animated.View style={[styles.card, { transform: [{ scale }] }]}>
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPressIn={onPressIn}
+                    onPressOut={onPressOut}
+                    onPress={() => openAlbum(item)}
+                >
+                    <View style={styles.thumbWrap}>
+                        <Image source={{ uri: item.coverUri }} style={styles.thumb} resizeMode="cover" />
+                        <ThemedText style={styles.cardTitle} numberOfLines={1}>{item.name}</ThemedText>
+                    </View>
+                </TouchableOpacity>
+            </Animated.View>
+        );
+    };
 
     return (
         <ThemedView style={styles.container}>
+            <View style={styles.header}>
+                <ThemedText type="title" style={styles.title}>Folder</ThemedText>
+                <ThemedText style={styles.subtitle}>{albums.length} album{albums.length !== 1 ? 's' : ''}</ThemedText>
+            </View>
             {loading && albums.length === 0 ? (
                 <View style={styles.loadingContainer}>
                     <ActivityIndicator size="large" color="#8B5CF6" />
@@ -103,7 +118,9 @@ export default function AlbumsScreen() {
                     data={albums}
                     keyExtractor={(item, idx) => String(item.id || idx)}
                     renderItem={renderAlbum}
-                    contentContainerStyle={albums.length === 0 ? styles.emptyContainer : styles.listContent}
+                    numColumns={2}
+                    columnWrapperStyle={styles.columnWrapper}
+                    contentContainerStyle={albums.length === 0 ? styles.emptyContainer : styles.gridContent}
                     refreshing={refreshing}
                     onRefresh={onRefresh}
                 />
@@ -113,22 +130,56 @@ export default function AlbumsScreen() {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f5f5f5' },
+    container: { flex: 1, backgroundColor: theme.bg },
+    header: {
+        padding: 20,
+        paddingTop: 60,
+        backgroundColor: '#fff',
+        borderBottomWidth: 1,
+        borderBottomColor: '#e0e0e0',
+    },
+    title: {
+        textAlign: 'center',
+        marginBottom: 5,
+        color: '#8B5CF6',
+        fontSize: 20,
+        fontWeight: '700',
+    },
+    subtitle: {
+        textAlign: 'center',
+        color: '#666',
+        fontSize: 14,
+    },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
     loadingText: { marginTop: 10, color: '#666' },
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
-    listContent: { padding: 12 },
-    item: {
-        backgroundColor: '#fff',
-        borderRadius: 10,
+    gridContent: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 20 },
+    columnWrapper: { justifyContent: 'space-between', marginBottom: 14 },
+    card: {
+        flex: 1,
+        borderRadius: theme.radius,
         overflow: 'hidden',
-        marginBottom: 12,
-        elevation: 2,
+        backgroundColor: theme.card,
+        ...theme.shadow,
+        marginHorizontal: 4,
     },
-    cover: { width: '100%', height: 160, backgroundColor: '#eee' },
-    meta: { padding: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-    name: { fontWeight: '600', color: '#333', maxWidth: '70%' },
-    count: { color: '#666' },
+    thumbWrap: {
+        height: 160,
+        borderRadius: theme.radius,
+        overflow: 'hidden',
+        backgroundColor: '#e9e9ef',
+    },
+    thumb: { width: '100%', height: '100%' },
+    cardTitle: {
+        position: 'absolute',
+        bottom: 0,
+        width: '100%',
+        padding: 10,
+        fontWeight: '600',
+        color: '#fff',
+        fontSize: 16,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+    },
 });
 
 
