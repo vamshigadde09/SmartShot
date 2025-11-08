@@ -34,3 +34,32 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Android build files
+android/app/build/
+android/app/.cxx/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+*.apk
+*.aab
+android/gradle/wrapper/gradle-wrapper.jar
+android/gradlew
+android/gradlew.bat
+
+# iOS build files
+ios/build/
+ios/Pods/
+*.xcworkspace
+!*.xcworkspace/contents.xcworkspacedata
+
+# Build artifacts
+*.apk
+*.aab
+*.ipa
+
+# Temporary files
+*.log
+note.txt
+BUILD_INSTRUCTIONS.md
+FIX_ICON.md

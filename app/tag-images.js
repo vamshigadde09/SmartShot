@@ -1,8 +1,8 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import * as FileSystem from 'expo-file-system/legacy';
-import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -34,6 +34,13 @@ export default function TagImagesScreen() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => { load(); }, [tag]);
+
+    // Auto-refresh when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            load();
+        }, [tag])
+    );
 
     const load = async () => {
         setLoading(true);
@@ -70,9 +77,15 @@ export default function TagImagesScreen() {
 
     return (
         <ThemedView style={styles.container}>
+            {/* Single Header with Back */}
             <View style={styles.header}>
+                <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                    <ThemedText style={styles.backButtonText}>← Back</ThemedText>
+                </TouchableOpacity>
                 <ThemedText type="title" style={styles.title}>#{String(tag)}</ThemedText>
+                <View style={styles.backButton} />
             </View>
+            
             {loading && items.length === 0 ? (
                 <View style={styles.loadingContainer}>
                     <ActivityIndicator size="large" color="#8B5CF6" />
@@ -93,8 +106,33 @@ export default function TagImagesScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f5f5f5' },
-    header: { padding: 20, paddingTop: 60, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e0e0e0' },
-    title: { textAlign: 'center', color: '#8B5CF6' },
+    header: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingTop: 60,
+        paddingBottom: 16,
+        backgroundColor: '#fff',
+        borderBottomWidth: 1,
+        borderBottomColor: '#e5e5e5',
+    },
+    backButton: {
+        padding: 8,
+        minWidth: 60,
+    },
+    backButtonText: {
+        fontSize: 16,
+        color: '#8B5CF6',
+        fontWeight: '600',
+    },
+    title: {
+        flex: 1,
+        textAlign: 'center',
+        color: '#8B5CF6',
+        fontSize: 18,
+        fontWeight: '700',
+    },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
     emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
     list: { paddingVertical: 12 },

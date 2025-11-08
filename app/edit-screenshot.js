@@ -1,21 +1,23 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { getAllScreenshots, saveScreenshotData as saveScreenshotDataToStorage } from '@/utils/fileStorage';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Linking from 'expo-linking';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Alert,
-    FlatList,
+    Animated,
+    Dimensions,
     Image,
-    Modal,
     NativeModules,
     PermissionsAndroid,
     Platform,
     ScrollView,
     StyleSheet,
-    Switch,
     TextInput,
     TouchableOpacity,
     View
@@ -25,12 +27,94 @@ import {
 const STORAGE_FILE = FileSystem.documentDirectory + 'screenshots.json';
 const FALLBACK_STORAGE_FILE = FileSystem.cacheDirectory + 'screenshots.json';
 
-// Predefined tags
-const PREDEFINED_TAGS = [
+// Default predefined tags
+const DEFAULT_PREDEFINED_TAGS = [
     'Travel', 'Food', 'Work', 'Personal', 'Important', 'Shopping',
     'Health', 'Family', 'Friends', 'Entertainment', 'Education',
     'Finance', 'Home', 'Car', 'Technology', 'Sports', 'Hobby'
 ];
+
+const PREDEFINED_TAGS_STORAGE_KEY = 'smartshot.predefinedTags';
+
+const { width: screenWidth } = Dimensions.get('window');
+
+// Audio Wave Component
+const AudioWave = ({ isRecording, recordingDuration }) => {
+    const waveAnimations = useRef(
+        Array.from({ length: 20 }, () => new Animated.Value(0.3))
+    ).current;
+
+    useEffect(() => {
+        if (isRecording) {
+            const animations = waveAnimations.map((anim, index) => {
+                return Animated.loop(
+                    Animated.sequence([
+                        Animated.delay(index * 100),
+                        Animated.timing(anim, {
+                            toValue: Math.random() * 0.7 + 0.3,
+                            duration: 300 + Math.random() * 200,
+                            useNativeDriver: true,
+                        }),
+                        Animated.timing(anim, {
+                            toValue: 0.3,
+                            duration: 300 + Math.random() * 200,
+                            useNativeDriver: true,
+                        }),
+                    ])
+                );
+            });
+
+            animations.forEach(anim => anim.start());
+
+            return () => {
+                animations.forEach(anim => anim.stop());
+            };
+        } else {
+            waveAnimations.forEach(anim => anim.setValue(0.3));
+        }
+    }, [isRecording]);
+
+    const formatTime = (seconds) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    return (
+        <View style={styles.audioWaveContainer}>
+            <View style={styles.waveBars}>
+                {waveAnimations.map((anim, index) => (
+                    <Animated.View
+                        key={index}
+                        style={[
+                            styles.waveBar,
+                            {
+                                transform: [{
+                                    scaleY: anim.interpolate({
+                                        inputRange: [0.3, 1],
+                                        outputRange: [0.3, 1],
+                                    })
+                                }],
+                                backgroundColor: isRecording ? '#FF6B6B' : '#8B5CF6',
+                            }
+                        ]}
+                    />
+                ))}
+            </View>
+            <View style={styles.recordingInfo}>
+                <View style={styles.recordingDot}>
+                    <View style={[styles.recordingPulse, isRecording && styles.recordingPulseActive]} />
+                </View>
+                <ThemedText style={styles.recordingTime}>
+                    {formatTime(recordingDuration)}
+                </ThemedText>
+                <ThemedText style={styles.recordingText}>
+                    {isRecording ? 'Recording...' : 'Ready to record'}
+                </ThemedText>
+            </View>
+        </View>
+    );
+};
 
 // Check if document directory is accessible
 const checkDocumentDirectory = async () => {
@@ -68,7 +152,6 @@ export default function EditScreenshotScreen() {
     const [text, setText] = useState('');
     const [audio, setAudio] = useState('');
     const [reminder, setReminder] = useState('');
-    const [isTodo, setIsTodo] = useState(false);
     const [tags, setTags] = useState('');
     const [loading, setLoading] = useState(true);
     const [originalFileName, setOriginalFileName] = useState('');
@@ -79,6 +162,8 @@ export default function EditScreenshotScreen() {
     const [audioUri, setAudioUri] = useState('');
     const [hasAudio, setHasAudio] = useState(false);
     const [lastError, setLastError] = useState('');
+    const [recordingDuration, setRecordingDuration] = useState(0);
+    const recordingTimerRef = useRef(null);
     const LOG_FILE = FileSystem.cacheDirectory + 'smartshot-log.txt';
 
     const appendLog = async (message) => {
@@ -132,24 +217,44 @@ export default function EditScreenshotScreen() {
 
     // Tag management states
     const [selectedTags, setSelectedTags] = useState([]);
-    const [showTagModal, setShowTagModal] = useState(false);
     const [customTag, setCustomTag] = useState('');
-
-    // Todo management states
-    const [showTodoModal, setShowTodoModal] = useState(false);
-    const [todoText, setTodoText] = useState('');
+    const [predefinedTags, setPredefinedTags] = useState(DEFAULT_PREDEFINED_TAGS);
 
     useEffect(() => {
         initializeDatabase();
         loadScreenshotData();
+        loadPredefinedTags();
         requestAudioPermission();
     }, []);
+
+    // Cleanup timer on unmount
+    useEffect(() => {
+        return () => {
+            if (recordingTimerRef.current) {
+                clearInterval(recordingTimerRef.current);
+            }
+        };
+    }, []);
+
+    const startRecordingTimer = () => {
+        setRecordingDuration(0);
+        recordingTimerRef.current = setInterval(() => {
+            setRecordingDuration(prev => prev + 1);
+        }, 1000);
+    };
+
+    const stopRecordingTimer = () => {
+        if (recordingTimerRef.current) {
+            clearInterval(recordingTimerRef.current);
+            recordingTimerRef.current = null;
+        }
+        setRecordingDuration(0);
+    };
 
     const requestAudioPermission = async () => {
         try {
             console.log('Requesting audio permissions...');
 
-            // Android: prefer native PermissionsAndroid for reliability
             if (Platform.OS === 'android') {
                 const alreadyGranted = await PermissionsAndroid.check(
                     PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
@@ -174,10 +279,8 @@ export default function EditScreenshotScreen() {
                     return true;
                 }
 
-                // Fall through to show settings prompt
                 console.log('Android microphone permission denied or never ask again:', result);
             } else {
-                // iOS or other platforms via expo-av
                 const { status: currentStatus } = await Audio.getPermissionsAsync();
                 if (currentStatus === 'granted') return true;
                 const { status } = await Audio.requestPermissionsAsync();
@@ -204,7 +307,6 @@ export default function EditScreenshotScreen() {
             return false;
         } catch (error) {
             await showDetailedError('Permission Error', 'PERM_REQUEST_FAILED', error);
-            // As a last resort, check one more time whether permission is already granted
             try {
                 if (Platform.OS === 'android') {
                     const granted = await PermissionsAndroid.check(
@@ -231,14 +333,12 @@ export default function EditScreenshotScreen() {
                 return;
             }
 
-            // First check and request permission
             const hasPermission = await requestAudioPermission();
             if (!hasPermission) {
                 console.log('Audio permission not granted');
                 return;
             }
 
-            // Also request via expo-av to satisfy internal checks
             try {
                 const { status } = await Audio.requestPermissionsAsync();
                 console.log('expo-av permission after Android check:', status);
@@ -249,20 +349,17 @@ export default function EditScreenshotScreen() {
             const okApis = await sanityCheckRecordingAPIs();
             if (!okApis) return;
 
-            // Pause background screenshot detection to avoid any audio focus/wake conflicts
             if (Platform.OS === 'android') {
                 try {
                     await NativeModules.ScreenshotModule?.stopBackgroundService?.();
                     setPausedDetection(true);
                     console.log('Paused background screenshot detection');
-                    // Give the system a moment after stopping the service
                     await new Promise(r => setTimeout(r, 200));
                 } catch (e) {
                     await appendLog(`Pause background service failed: ${String(e?.message || e)}`);
                 }
             }
 
-            // Configure audio mode for recording with retry to avoid audio focus conflicts
             try {
                 await Audio.setAudioModeAsync({
                     allowsRecordingIOS: true,
@@ -295,7 +392,6 @@ export default function EditScreenshotScreen() {
                 }
             }
 
-            // Small delay to let audio focus settle
             await new Promise(resolve => setTimeout(resolve, 150));
 
             console.log('Audio mode configured, preparing recording (manual)...');
@@ -319,19 +415,20 @@ export default function EditScreenshotScreen() {
                 await newRecording.startAsync();
                 setRecording(newRecording);
                 setIsRecording(true);
+                startRecordingTimer();
                 console.log('Recording started successfully (manual)');
                 return;
             } catch (manualErr) {
                 await showDetailedError('Recording Start Failed (manual)', 'REC_START_MANUAL', manualErr);
             }
 
-            // Fallback to createAsync
             console.log('Trying fallback: Recording.createAsync...');
             const { recording: fallbackRecording } = await Audio.Recording.createAsync(
                 Audio.RecordingOptionsPresets.HIGH_QUALITY
             );
             setRecording(fallbackRecording);
             setIsRecording(true);
+            startRecordingTimer();
             console.log('Recording started successfully (fallback)');
 
         } catch (error) {
@@ -348,6 +445,7 @@ export default function EditScreenshotScreen() {
         try {
             console.log('Stopping recording...');
             setIsRecording(false);
+            stopRecordingTimer();
 
             await recording.stopAndUnloadAsync();
             const uri = recording.getURI();
@@ -358,7 +456,6 @@ export default function EditScreenshotScreen() {
             setAudio(uri);
             setRecording(null);
 
-            // Reset audio mode after recording
             await Audio.setAudioModeAsync({
                 allowsRecordingIOS: false,
                 playsInSilentModeIOS: true,
@@ -367,7 +464,6 @@ export default function EditScreenshotScreen() {
                 playThroughEarpieceAndroid: false,
             });
 
-            // Resume background screenshot detection if we paused it
             if (Platform.OS === 'android' && pausedDetection) {
                 try {
                     await NativeModules.ScreenshotModule?.startBackgroundService?.();
@@ -392,7 +488,6 @@ export default function EditScreenshotScreen() {
         try {
             console.log('Playing audio:', audioUri);
 
-            // Configure audio mode for playback
             await Audio.setAudioModeAsync({
                 allowsRecordingIOS: false,
                 playsInSilentModeIOS: true,
@@ -406,7 +501,6 @@ export default function EditScreenshotScreen() {
                 { shouldPlay: true }
             );
 
-            // Set up playback status update
             sound.setOnPlaybackStatusUpdate((status) => {
                 if (status.didJustFinish) {
                     sound.unloadAsync();
@@ -428,39 +522,64 @@ export default function EditScreenshotScreen() {
         console.log('Audio deleted');
     };
 
-    // Tag management functions
+    // Load predefined tags from storage
+    const loadPredefinedTags = async () => {
+        try {
+            const savedTags = await AsyncStorage.getItem(PREDEFINED_TAGS_STORAGE_KEY);
+            if (savedTags) {
+                const parsedTags = JSON.parse(savedTags);
+                if (Array.isArray(parsedTags) && parsedTags.length > 0) {
+                    setPredefinedTags(parsedTags);
+                }
+            }
+        } catch (error) {
+            console.error('Error loading predefined tags:', error);
+        }
+    };
+
+    // Save predefined tags to storage
+    const savePredefinedTags = async (tags) => {
+        try {
+            await AsyncStorage.setItem(PREDEFINED_TAGS_STORAGE_KEY, JSON.stringify(tags));
+            setPredefinedTags(tags);
+        } catch (error) {
+            console.error('Error saving predefined tags:', error);
+        }
+    };
+
+    // Tag management functions - Only allow one tag at a time
     const toggleTag = (tag) => {
-        if (selectedTags.includes(tag)) {
-            setSelectedTags(selectedTags.filter(t => t !== tag));
-        } else {
-            setSelectedTags([...selectedTags, tag]);
-        }
+        // If clicking the same tag, remove it. Otherwise, replace current tag with new one
+        const newSelectedTags = selectedTags.includes(tag) ? [] : [tag];
+        setSelectedTags(newSelectedTags);
+        // Save tags immediately
+        setTags(newSelectedTags.length > 0 ? newSelectedTags[0] : '');
     };
 
-    const addCustomTag = () => {
-        if (customTag.trim() && !selectedTags.includes(customTag.trim())) {
-            setSelectedTags([...selectedTags, customTag.trim()]);
+    const addCustomTag = async () => {
+        const trimmedTag = customTag.trim();
+        if (trimmedTag) {
+            // Replace any existing tag with the new one
+            setSelectedTags([trimmedTag]);
             setCustomTag('');
+            // Save tags immediately
+            setTags(trimmedTag);
+
+            // Add to predefined tags if it doesn't exist
+            if (!predefinedTags.includes(trimmedTag)) {
+                const updatedTags = [...predefinedTags, trimmedTag].sort();
+                await savePredefinedTags(updatedTags);
+            }
         }
     };
 
-    const removeTag = (tag) => {
-        setSelectedTags(selectedTags.filter(t => t !== tag));
+    const removeTag = () => {
+        // Remove the only tag
+        setSelectedTags([]);
+        // Save tags immediately
+        setTags('');
     };
 
-    const saveTags = () => {
-        setTags(selectedTags.join(', '));
-        setShowTagModal(false);
-    };
-
-    // Todo management functions
-    const addTodo = () => {
-        if (todoText.trim()) {
-            setText(prevText => prevText ? `${prevText}\n• ${todoText.trim()}` : `• ${todoText.trim()}`);
-            setTodoText('');
-            setShowTodoModal(false);
-        }
-    };
 
     const initializeDatabase = async () => {
         try {
@@ -478,7 +597,6 @@ export default function EditScreenshotScreen() {
                     console.log('Storage file already exists');
                 }
             } catch (fileError) {
-                // If getInfoAsync fails, try to create the file
                 console.log('File check failed, creating new storage file...');
                 await FileSystem.writeAsStringAsync(storageFile, JSON.stringify([]));
                 console.log('Storage file created successfully');
@@ -502,7 +620,6 @@ export default function EditScreenshotScreen() {
     const loadScreenshotData = async () => {
         if (!screenshotId) {
             setLoading(false);
-            // New entry: prefill name from URI
             const base = getFileNameFromUri(screenshotUri);
             setImageName(base);
             setOriginalFileName(base);
@@ -510,39 +627,62 @@ export default function EditScreenshotScreen() {
         }
 
         try {
-            const storageFile = await getStorageFile();
-            try {
-                const fileInfo = await FileSystem.getInfoAsync(storageFile);
-                if (fileInfo.exists) {
-                    const fileContent = await FileSystem.readAsStringAsync(storageFile);
-                    const screenshots = JSON.parse(fileContent);
-                    const data = screenshots.find(s => s.id === screenshotId);
-                    if (data) {
-                        setScreenshotData(data);
-                        setText(data.text || '');
-                        setImageName(data.name || getFileNameFromUri(data.uri || screenshotUri));
-                        setOriginalFileName(getFileNameFromUri(data.uri || screenshotUri));
-                        setAudio(data.audio || '');
-                        setReminder(data.reminder || '');
-                        setIsTodo(!!data.isTodo);
-                        setTags(data.tags || '');
+            let data = null;
 
-                        // Handle audio
-                        if (data.audio) {
-                            setAudioUri(data.audio);
-                            setHasAudio(true);
-                        }
+            if (screenshotId) {
+                const allScreenshots = await getAllScreenshots();
+                data = allScreenshots.find(s =>
+                    String(s.id) === String(screenshotId) ||
+                    s.id === screenshotId ||
+                    String(s.id) === String(screenshotId) ||
+                    s.id === String(screenshotId)
+                );
 
-                        // Handle tags
-                        if (data.tags) {
-                            const tagArray = data.tags.split(',').map(t => t.trim()).filter(t => t);
-                            setSelectedTags(tagArray);
+                if (!data) {
+                    const storageFile = await getStorageFile();
+                    try {
+                        const fileInfo = await FileSystem.getInfoAsync(storageFile);
+                        if (fileInfo.exists) {
+                            const fileContent = await FileSystem.readAsStringAsync(storageFile);
+                            const screenshots = JSON.parse(fileContent);
+                            data = screenshots.find(s =>
+                                String(s.id) === String(screenshotId) ||
+                                s.id === screenshotId
+                            );
                         }
+                    } catch (fileError) {
+                        console.log('File not found or error reading file');
                     }
                 }
-            } catch (fileError) {
-                console.log('File not found or error reading file, starting fresh');
+
+                if (!data) {
+                    console.log('External storage check failed (redundant)');
+                }
             }
+
+            if (data) {
+                setScreenshotData(data);
+                setText(data.text || '');
+                setImageName(data.name || getFileNameFromUri(data.uri || screenshotUri));
+                setOriginalFileName(getFileNameFromUri(data.uri || screenshotUri));
+                setAudio(data.audio || '');
+                setReminder(data.reminder || '');
+                setTags(data.tags || '');
+
+                if (data.audio) {
+                    setAudioUri(data.audio);
+                    setHasAudio(true);
+                }
+
+                if (data.tags) {
+                    // Only take the first tag since we only allow one tag
+                    const tagString = String(data.tags).split(',')[0].trim();
+                    if (tagString) {
+                        setSelectedTags([tagString]);
+                    }
+                }
+            }
+
             setLoading(false);
         } catch (error) {
             console.error('Error loading screenshot data:', error);
@@ -555,29 +695,6 @@ export default function EditScreenshotScreen() {
         const id = screenshotId || `screenshot_${Date.now()}`;
 
         try {
-            console.log('Starting save process...');
-            const storageFile = await getStorageFile();
-            console.log('Storage file path:', storageFile);
-            console.log('Screenshot URI:', screenshotUri);
-            console.log('Screenshot ID:', id);
-
-            let screenshots = [];
-
-            try {
-                const fileInfo = await FileSystem.getInfoAsync(storageFile);
-                if (fileInfo.exists) {
-                    console.log('File exists, reading content...');
-                    const fileContent = await FileSystem.readAsStringAsync(storageFile);
-                    screenshots = JSON.parse(fileContent);
-                    console.log('Loaded screenshots:', screenshots.length);
-                } else {
-                    console.log('File does not exist, creating new...');
-                }
-            } catch (fileError) {
-                console.log('File check failed, starting with empty array');
-            }
-
-            // If user changed the name, attempt to rename the underlying media file (Android only)
             try {
                 if (Platform.OS === 'android' && screenshotUri && imageName && imageName.trim()) {
                     const desired = imageName.trim();
@@ -590,6 +707,9 @@ export default function EditScreenshotScreen() {
                 console.warn('Rename failed (keeping metadata only):', renameErr?.message || renameErr);
             }
 
+            // Only save one tag (the first one if multiple exist)
+            const tagsToSave = tags || (selectedTags.length > 0 ? selectedTags[0] : '');
+
             const screenshotToSave = {
                 id,
                 uri: screenshotUri,
@@ -597,32 +717,62 @@ export default function EditScreenshotScreen() {
                 text,
                 audio,
                 reminder,
-                isTodo,
-                tags,
+                tags: tagsToSave,
                 createdAt: screenshotData?.createdAt || now,
                 updatedAt: now
             };
 
-            console.log('Screenshot to save:', screenshotToSave);
+            try {
+                const saved = await saveScreenshotDataToStorage(screenshotToSave);
 
-            const existingIndex = screenshots.findIndex(s => s.id === id);
-            if (existingIndex >= 0) {
-                console.log('Updating existing screenshot at index:', existingIndex);
-                screenshots[existingIndex] = screenshotToSave;
-            } else {
-                console.log('Adding new screenshot');
-                screenshots.push(screenshotToSave);
+                if (!saved) {
+                    const errorDetails = [
+                        'Failed to save screenshot data',
+                        '',
+                        'Data being saved:',
+                        `ID: ${screenshotToSave.id}`,
+                        `URI: ${screenshotToSave.uri || 'N/A'}`,
+                        `Tags: ${screenshotToSave.tags || 'None'}`,
+                        `Text: ${screenshotToSave.text ? 'Yes' : 'No'}`,
+                        `Audio: ${screenshotToSave.audio ? 'Yes' : 'No'}`,
+                        '',
+                        'Possible causes:',
+                        '- Storage permission denied',
+                        '- File system error',
+                        '- Corrupted data file',
+                        '- Invalid data format',
+                    ].join('\n');
+
+                    Alert.alert('Save Error', errorDetails);
+                    return;
+                }
+            } catch (saveError) {
+                const errorDetails = [
+                    'Failed to save screenshot data',
+                    '',
+                    'Error Type: ' + (saveError?.name || 'Unknown'),
+                    'Error Message: ' + (saveError?.message || String(saveError) || 'Unknown error'),
+                    '',
+                    'Error Stack:',
+                    (saveError?.stack || 'No stack trace available').substring(0, 500),
+                    '',
+                    'Data that failed to save:',
+                    `ID: ${screenshotToSave.id}`,
+                    `URI: ${screenshotToSave.uri || 'N/A'}`,
+                    `Tags: ${screenshotToSave.tags || 'None'}`,
+                    `Text: ${screenshotToSave.text ? 'Yes (' + screenshotToSave.text.length + ' chars)' : 'No'}`,
+                    `Audio: ${screenshotToSave.audio ? 'Yes' : 'No'}`,
+                    `Name: ${screenshotToSave.name || 'N/A'}`,
+                ].join('\n');
+
+                Alert.alert('Save Error', errorDetails);
+                return;
             }
 
-            console.log('Saving to file...');
-            await FileSystem.writeAsStringAsync(storageFile, JSON.stringify(screenshots));
-            console.log('Save successful!');
-            Alert.alert('Success', 'Screenshot data saved successfully!');
             router.back();
+
         } catch (error) {
             console.error('Error saving screenshot data:', error);
-            console.error('Error details:', error.message);
-            console.error('Error stack:', error.stack);
             Alert.alert('Error', `Failed to save screenshot data: ${error.message}`);
         }
     };
@@ -672,7 +822,8 @@ export default function EditScreenshotScreen() {
         return (
             <ThemedView style={styles.container}>
                 <View style={styles.loadingContainer}>
-                    <ThemedText>Loading...</ThemedText>
+                    <Ionicons name="image" size={48} color="#8B5CF6" />
+                    <ThemedText style={styles.loadingText}>Loading...</ThemedText>
                 </View>
             </ThemedView>
         );
@@ -680,18 +831,19 @@ export default function EditScreenshotScreen() {
 
     return (
         <ThemedView style={styles.container}>
-            <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-                {/* Header */}
-                <View style={styles.header}>
-                    <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-                        <ThemedText style={styles.backButtonText}>← Back</ThemedText>
-                    </TouchableOpacity>
-                    <ThemedText style={styles.title}>Edit Screenshot</ThemedText>
-                    <TouchableOpacity style={styles.saveButton} onPress={saveScreenshotData}>
-                        <ThemedText style={styles.saveButtonText}>Save</ThemedText>
-                    </TouchableOpacity>
-                </View>
+            {/* Header */}
+            <View style={styles.header}>
+                <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+                    <Ionicons name="chevron-back" size={24} color="#8B5CF6" />
+                    <ThemedText style={styles.backButtonText}>Back</ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={saveScreenshotData} style={styles.saveButton}>
+                    <Ionicons name="checkmark" size={20} color="#fff" />
+                    <ThemedText style={styles.saveButtonText}>Save</ThemedText>
+                </TouchableOpacity>
+            </View>
 
+            <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
                 {/* Image Preview */}
                 <View style={styles.imagePreviewContainer}>
                     <ThemedText style={styles.sectionTitle}>Image Preview</ThemedText>
@@ -701,269 +853,234 @@ export default function EditScreenshotScreen() {
                             style={styles.previewImage}
                             resizeMode="cover"
                         />
+                        <View style={styles.imageOverlay}>
+                            <Ionicons name="image" size={32} color="rgba(255,255,255,0.8)" />
+                        </View>
                     </View>
                 </View>
 
-                {/* Text Section */}
+                {/* Image Name */}
                 <View style={styles.section}>
-                    <ThemedText style={styles.sectionTitle}>Image Name</ThemedText>
+                    <View style={styles.sectionHeader}>
+                        <Ionicons name="pencil" size={18} color="#8B5CF6" />
+                        <ThemedText style={styles.sectionTitle}>Image Name</ThemedText>
+                    </View>
                     <TextInput
                         style={styles.textInput}
                         value={imageName}
                         onChangeText={setImageName}
                         placeholder="Enter a name for this image..."
+                        placeholderTextColor="#999"
                     />
                 </View>
 
-                {/* Text Section */}
+                {/* Text Notes */}
                 <View style={styles.section}>
-                    <ThemedText style={styles.sectionTitle}>Text</ThemedText>
+                    <View style={styles.sectionHeader}>
+                        <Ionicons name="document-text" size={18} color="#8B5CF6" />
+                        <ThemedText style={styles.sectionTitle}>Text Notes</ThemedText>
+                    </View>
                     <TextInput
-                        style={styles.textInput}
+                        style={[styles.textInput, styles.textArea]}
                         value={text}
                         onChangeText={setText}
                         placeholder="Add text notes about this screenshot..."
+                        placeholderTextColor="#999"
                         multiline
                         numberOfLines={4}
                         textAlignVertical="top"
                     />
                 </View>
 
-                {/* Audio Section */}
+                {/* Audio Recording */}
                 <View style={styles.section}>
-                    <ThemedText style={styles.sectionTitle}>Audio Recording</ThemedText>
+                    <View style={styles.sectionHeader}>
+                        <Ionicons name="mic" size={18} color="#8B5CF6" />
+                        <ThemedText style={styles.sectionTitle}>Audio Recording</ThemedText>
+                    </View>
+
                     {!!lastError && (
                         <View style={styles.errorBox}>
-                            <ThemedText style={styles.errorTitle}>Last Error</ThemedText>
+                            <Ionicons name="warning" size={16} color="#DC2626" />
                             <ThemedText style={styles.errorText}>{lastError}</ThemedText>
                         </View>
                     )}
 
                     {!hasAudio ? (
-                        <View style={styles.audioControls}>
+                        <View style={styles.audioRecordingContainer}>
+                            <AudioWave
+                                isRecording={isRecording}
+                                recordingDuration={recordingDuration}
+                            />
                             <TouchableOpacity
-                                style={[styles.audioButton, isRecording ? styles.recordingButton : styles.recordButton]}
+                                style={[
+                                    styles.recordButton,
+                                    isRecording && styles.recordingButton
+                                ]}
                                 onPress={isRecording ? stopRecording : startRecording}
                             >
-                                <ThemedText style={styles.audioButtonText}>
-                                    {isRecording ? '⏹️ Stop Recording' : '🎤 Start Recording'}
+                                <Ionicons
+                                    name={isRecording ? "stop" : "mic"}
+                                    size={24}
+                                    color="#fff"
+                                />
+                                <ThemedText style={styles.recordButtonText}>
+                                    {isRecording ? 'Stop Recording' : 'Start Recording'}
                                 </ThemedText>
                             </TouchableOpacity>
                         </View>
                     ) : (
-                        <View style={styles.audioPlayer}>
-                            <ThemedText style={styles.audioStatus}>Audio recorded successfully!</ThemedText>
-                            <View style={styles.audioPlayerControls}>
-                                <TouchableOpacity style={styles.playButton} onPress={playAudio}>
-                                    <ThemedText style={styles.playButtonText}>▶️ Play</ThemedText>
+                        <View style={styles.audioPlaybackContainer}>
+                            <View style={styles.audioStatus}>
+                                <Ionicons name="checkmark-circle" size={20} color="#10B981" />
+                                <ThemedText style={styles.audioStatusText}>
+                                    Audio recorded successfully!
+                                </ThemedText>
+                            </View>
+                            <View style={styles.audioControls}>
+                                <TouchableOpacity
+                                    style={[styles.audioControlButton, styles.playButton]}
+                                    onPress={playAudio}
+                                >
+                                    <Ionicons name="play" size={18} color="#fff" />
+                                    <ThemedText style={styles.audioControlText}>Play</ThemedText>
                                 </TouchableOpacity>
-                                <TouchableOpacity style={styles.deleteAudioButton} onPress={deleteAudio}>
-                                    <ThemedText style={styles.deleteAudioButtonText}>🗑️ Delete</ThemedText>
+                                <TouchableOpacity
+                                    style={[styles.audioControlButton, styles.deleteButton]}
+                                    onPress={deleteAudio}
+                                >
+                                    <Ionicons name="trash" size={18} color="#fff" />
+                                    <ThemedText style={styles.audioControlText}>Delete</ThemedText>
                                 </TouchableOpacity>
                             </View>
                         </View>
                     )}
                 </View>
 
-                {/* Reminder Section */}
+                {/* Reminder */}
                 <View style={styles.section}>
-                    <ThemedText style={styles.sectionTitle}>Reminder</ThemedText>
+                    <View style={styles.sectionHeader}>
+                        <Ionicons name="alarm" size={18} color="#8B5CF6" />
+                        <ThemedText style={styles.sectionTitle}>Reminder</ThemedText>
+                    </View>
                     <TextInput
                         style={styles.textInput}
                         value={reminder}
                         onChangeText={setReminder}
                         placeholder="Set a reminder for this screenshot..."
+                        placeholderTextColor="#999"
                         multiline
                         numberOfLines={2}
                         textAlignVertical="top"
                     />
                 </View>
 
-                {/* Todo Section */}
+                {/* Tags */}
                 <View style={styles.section}>
-                    <View style={styles.todoHeader}>
-                        <ThemedText style={styles.sectionTitle}>Todo Management</ThemedText>
-                        <Switch
-                            value={isTodo}
-                            onValueChange={setIsTodo}
-                            trackColor={{ false: '#767577', true: '#8B5CF6' }}
-                            thumbColor={isTodo ? '#f4f3f4' : '#f4f3f4'}
-                        />
-                    </View>
-                    {isTodo && (
-                        <View style={styles.todoControls}>
-                            <ThemedText style={styles.todoDescription}>
-                                This screenshot will be added to your todo list
-                            </ThemedText>
-                            <TouchableOpacity
-                                style={styles.addTodoButton}
-                                onPress={() => setShowTodoModal(true)}
-                            >
-                                <ThemedText style={styles.addTodoButtonText}>+ Add Todo Item</ThemedText>
-                            </TouchableOpacity>
-                        </View>
-                    )}
-                </View>
-
-                {/* Tags Section */}
-                <View style={styles.section}>
-                    <View style={styles.tagsHeader}>
+                    <View style={styles.sectionHeader}>
+                        <Ionicons name="pricetags" size={18} color="#8B5CF6" />
                         <ThemedText style={styles.sectionTitle}>Tags</ThemedText>
+                    </View>
+
+                    {/* Add Tag Input */}
+                    <View style={styles.inlineTagInputContainer}>
+                        <TextInput
+                            style={styles.inlineTagInput}
+                            value={customTag}
+                            onChangeText={setCustomTag}
+                            placeholder="Add a tag..."
+                            placeholderTextColor="#999"
+                            onSubmitEditing={addCustomTag}
+                            returnKeyType="done"
+                        />
                         <TouchableOpacity
-                            style={styles.manageTagsButton}
-                            onPress={() => setShowTagModal(true)}
+                            style={[styles.inlineAddTagButton, !customTag.trim() && styles.inlineAddTagButtonDisabled]}
+                            onPress={addCustomTag}
+                            disabled={!customTag.trim()}
                         >
-                            <ThemedText style={styles.manageTagsButtonText}>Manage Tags</ThemedText>
+                            <Ionicons name="add" size={20} color="#fff" />
                         </TouchableOpacity>
                     </View>
 
-                    {selectedTags.length > 0 && (
+                    {/* Selected Tag Display - Only one tag allowed */}
+                    {selectedTags.length > 0 ? (
                         <View style={styles.selectedTagsContainer}>
-                            {selectedTags.map((tag, index) => (
+                            <TouchableOpacity
+                                style={styles.tagChip}
+                                onPress={removeTag}
+                                activeOpacity={0.7}
+                            >
+                                <ThemedText style={styles.tagChipText}>{selectedTags[0]}</ThemedText>
+                                <Ionicons name="close-circle" size={16} color="#fff" />
+                            </TouchableOpacity>
+                        </View>
+                    ) : (
+                        <ThemedText style={styles.noTagsText}>No tag added yet</ThemedText>
+                    )}
+
+                    {/* Quick Tags - Predefined Tags */}
+                    <View style={styles.quickTagsSection}>
+                        <ThemedText style={styles.quickTagsTitle}>Quick Select (click to replace current tag)</ThemedText>
+                        <View style={styles.quickTagsContainer}>
+                            {predefinedTags.map((tag) => (
                                 <TouchableOpacity
-                                    key={index}
-                                    style={styles.selectedTag}
-                                    onPress={() => removeTag(tag)}
+                                    key={tag}
+                                    style={[
+                                        styles.quickTagChip,
+                                        selectedTags.includes(tag) && styles.quickTagChipSelected
+                                    ]}
+                                    onPress={() => toggleTag(tag)}
+                                    activeOpacity={0.7}
                                 >
-                                    <ThemedText style={styles.selectedTagText}>{tag} ×</ThemedText>
+                                    <ThemedText style={[
+                                        styles.quickTagChipText,
+                                        selectedTags.includes(tag) && styles.quickTagChipTextSelected
+                                    ]}>
+                                        {tag}
+                                    </ThemedText>
+                                    {selectedTags.includes(tag) && (
+                                        <Ionicons name="checkmark" size={14} color="#fff" />
+                                    )}
                                 </TouchableOpacity>
                             ))}
                         </View>
-                    )}
+                    </View>
                 </View>
 
                 {/* Metadata */}
                 {screenshotData && (
                     <View style={styles.section}>
-                        <ThemedText style={styles.sectionTitle}>Metadata</ThemedText>
+                        <View style={styles.sectionHeader}>
+                            <Ionicons name="information-circle" size={18} color="#8B5CF6" />
+                            <ThemedText style={styles.sectionTitle}>Metadata</ThemedText>
+                        </View>
                         <View style={styles.metadataContainer}>
-                            <ThemedText style={styles.metadataText}>
-                                Created: {formatDate(screenshotData.createdAt)}
-                            </ThemedText>
-                            <ThemedText style={styles.metadataText}>
-                                Updated: {formatDate(screenshotData.updatedAt)}
-                            </ThemedText>
+                            <View style={styles.metadataItem}>
+                                <Ionicons name="calendar" size={14} color="#666" />
+                                <ThemedText style={styles.metadataText}>
+                                    Created: {formatDate(screenshotData.createdAt)}
+                                </ThemedText>
+                            </View>
+                            <View style={styles.metadataItem}>
+                                <Ionicons name="refresh" size={14} color="#666" />
+                                <ThemedText style={styles.metadataText}>
+                                    Updated: {formatDate(screenshotData.updatedAt)}
+                                </ThemedText>
+                            </View>
                         </View>
                     </View>
                 )}
 
                 {/* Delete Button */}
                 {screenshotId && (
-                    <TouchableOpacity style={styles.deleteButton} onPress={deleteScreenshotData}>
-                        <ThemedText style={styles.deleteButtonText}>Delete Screenshot Data</ThemedText>
+                    <TouchableOpacity style={styles.deleteSection} onPress={deleteScreenshotData}>
+                        <Ionicons name="trash" size={20} color="#DC2626" />
+                        <ThemedText style={styles.deleteSectionText}>Delete Screenshot Data</ThemedText>
                     </TouchableOpacity>
                 )}
 
-                {/* Bottom Spacing */}
                 <View style={styles.bottomSpacing} />
             </ScrollView>
-
-            {/* Tag Management Modal */}
-            <Modal
-                visible={showTagModal}
-                transparent={true}
-                animationType="slide"
-                onRequestClose={() => setShowTagModal(false)}
-            >
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <View style={styles.modalHeader}>
-                            <ThemedText style={styles.modalTitle}>Select Tags</ThemedText>
-                            <TouchableOpacity
-                                style={styles.closeModalButton}
-                                onPress={() => setShowTagModal(false)}
-                            >
-                                <ThemedText style={styles.closeModalButtonText}>×</ThemedText>
-                            </TouchableOpacity>
-                        </View>
-
-                        <View style={styles.customTagContainer}>
-                            <TextInput
-                                style={styles.customTagInput}
-                                value={customTag}
-                                onChangeText={setCustomTag}
-                                placeholder="Add custom tag..."
-                            />
-                            <TouchableOpacity style={styles.addCustomTagButton} onPress={addCustomTag}>
-                                <ThemedText style={styles.addCustomTagButtonText}>Add</ThemedText>
-                            </TouchableOpacity>
-                        </View>
-
-                        <FlatList
-                            data={PREDEFINED_TAGS}
-                            keyExtractor={(item) => item}
-                            numColumns={2}
-                            renderItem={({ item }) => (
-                                <TouchableOpacity
-                                    style={[
-                                        styles.tagOption,
-                                        selectedTags.includes(item) && styles.selectedTagOption
-                                    ]}
-                                    onPress={() => toggleTag(item)}
-                                >
-                                    <ThemedText style={[
-                                        styles.tagOptionText,
-                                        selectedTags.includes(item) && styles.selectedTagOptionText
-                                    ]}>
-                                        {item}
-                                    </ThemedText>
-                                </TouchableOpacity>
-                            )}
-                            style={styles.tagsList}
-                        />
-
-                        <View style={styles.modalActions}>
-                            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowTagModal(false)}>
-                                <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={styles.saveButton} onPress={saveTags}>
-                                <ThemedText style={styles.saveButtonText}>Save Tags</ThemedText>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </View>
-            </Modal>
-
-            {/* Todo Management Modal */}
-            <Modal
-                visible={showTodoModal}
-                transparent={true}
-                animationType="slide"
-                onRequestClose={() => setShowTodoModal(false)}
-            >
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <View style={styles.modalHeader}>
-                            <ThemedText style={styles.modalTitle}>Add Todo Item</ThemedText>
-                            <TouchableOpacity
-                                style={styles.closeModalButton}
-                                onPress={() => setShowTodoModal(false)}
-                            >
-                                <ThemedText style={styles.closeModalButtonText}>×</ThemedText>
-                            </TouchableOpacity>
-                        </View>
-
-                        <TextInput
-                            style={styles.todoInput}
-                            value={todoText}
-                            onChangeText={setTodoText}
-                            placeholder="Enter todo item..."
-                            multiline
-                            numberOfLines={3}
-                            textAlignVertical="top"
-                        />
-
-                        <View style={styles.modalActions}>
-                            <TouchableOpacity style={styles.cancelButton} onPress={() => setShowTodoModal(false)}>
-                                <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={styles.saveButton} onPress={addTodo}>
-                                <ThemedText style={styles.saveButtonText}>Add Todo</ThemedText>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </View>
-            </Modal>
         </ThemedView>
     );
 }
@@ -971,7 +1088,7 @@ export default function EditScreenshotScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: '#f8fafc',
     },
     scrollView: {
         flex: 1,
@@ -980,6 +1097,12 @@ const styles = StyleSheet.create({
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
+        gap: 16,
+    },
+    loadingText: {
+        fontSize: 16,
+        color: '#6B7280',
+        fontWeight: '500',
     },
     header: {
         flexDirection: 'row',
@@ -987,357 +1110,387 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         paddingHorizontal: 20,
         paddingTop: 60,
-        paddingBottom: 20,
+        paddingBottom: 16,
         backgroundColor: '#fff',
         borderBottomWidth: 1,
-        borderBottomColor: '#e0e0e0',
+        borderBottomColor: '#f1f5f9',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+        elevation: 4,
     },
     backButton: {
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        backgroundColor: '#f0f0f0',
-        borderRadius: 8,
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 8,
+        gap: 8,
     },
     backButtonText: {
+        fontSize: 16,
         color: '#8B5CF6',
         fontWeight: '600',
     },
-    title: {
-        fontSize: 18,
-        fontWeight: 'bold',
-        color: '#333',
-    },
     saveButton: {
-        paddingVertical: 8,
-        paddingHorizontal: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
         backgroundColor: '#8B5CF6',
-        borderRadius: 8,
+        paddingHorizontal: 20,
+        paddingVertical: 10,
+        borderRadius: 12,
+        gap: 8,
+        shadowColor: '#8B5CF6',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 4,
     },
     saveButtonText: {
         color: '#fff',
+        fontSize: 16,
         fontWeight: '600',
     },
     imagePreviewContainer: {
         margin: 20,
         backgroundColor: '#fff',
-        borderRadius: 12,
-        padding: 16,
+        borderRadius: 16,
+        padding: 20,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
+        shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        shadowRadius: 12,
+        elevation: 4,
     },
     imagePreview: {
         height: 200,
-        backgroundColor: '#f0f0f0',
-        borderRadius: 8,
+        backgroundColor: '#f8fafc',
+        borderRadius: 12,
         overflow: 'hidden',
-        marginTop: 8,
+        marginTop: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
     previewImage: {
         width: '100%',
         height: '100%',
     },
+    imageOverlay: {
+        position: 'absolute',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
     section: {
         marginHorizontal: 20,
-        marginBottom: 20,
+        marginBottom: 16,
         backgroundColor: '#fff',
-        borderRadius: 12,
-        padding: 16,
+        borderRadius: 16,
+        padding: 20,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
         shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        shadowRadius: 8,
+        elevation: 2,
+    },
+    sectionHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 16,
     },
     sectionTitle: {
         fontSize: 16,
         fontWeight: '600',
-        color: '#333',
-        marginBottom: 12,
+        color: '#1f2937',
     },
     textInput: {
         borderWidth: 1,
-        borderColor: '#e0e0e0',
-        borderRadius: 8,
-        padding: 12,
+        borderColor: '#e5e7eb',
+        borderRadius: 12,
+        padding: 16,
         fontSize: 16,
-        color: '#333',
-        backgroundColor: '#f9f9f9',
-        minHeight: 80,
+        color: '#1f2937',
+        backgroundColor: '#f9fafb',
     },
-    todoHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-    },
-    todoDescription: {
-        fontSize: 14,
-        color: '#666',
-        marginTop: 8,
-        fontStyle: 'italic',
+    textArea: {
+        minHeight: 100,
+        textAlignVertical: 'top',
     },
     metadataContainer: {
-        marginTop: 8,
+        gap: 8,
+    },
+    metadataItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
     },
     metadataText: {
         fontSize: 14,
-        color: '#666',
-        marginBottom: 4,
+        color: '#6B7280',
     },
-    deleteButton: {
+    deleteSection: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 12,
         marginHorizontal: 20,
         marginBottom: 20,
-        backgroundColor: '#ff4444',
-        borderRadius: 12,
-        padding: 16,
-        alignItems: 'center',
+        backgroundColor: '#FEF2F2',
+        borderWidth: 1,
+        borderColor: '#FECACA',
+        borderRadius: 16,
+        padding: 20,
     },
-    deleteButtonText: {
-        color: '#fff',
+    deleteSectionText: {
+        color: '#DC2626',
         fontSize: 16,
         fontWeight: '600',
     },
     bottomSpacing: {
         height: 40,
     },
-    // Audio recording styles
-    audioControls: {
+    // Audio Wave Styles
+    audioWaveContainer: {
         alignItems: 'center',
-        paddingVertical: 20,
+        marginBottom: 20,
     },
-    audioButton: {
-        paddingVertical: 15,
-        paddingHorizontal: 30,
-        borderRadius: 25,
+    waveBars: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        height: 60,
+        marginBottom: 16,
+        gap: 3,
+    },
+    waveBar: {
+        width: 4,
+        borderRadius: 2,
+        minHeight: 8,
+    },
+    recordingInfo: {
+        alignItems: 'center',
+        gap: 8,
+    },
+    recordingDot: {
+        width: 12,
+        height: 12,
+        borderRadius: 6,
+        backgroundColor: '#FF6B6B',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    recordingPulse: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        backgroundColor: '#fff',
+    },
+    recordingPulseActive: {
+        backgroundColor: '#FF6B6B',
+    },
+    recordingTime: {
+        fontSize: 24,
+        fontWeight: '700',
+        color: '#1f2937',
+    },
+    recordingText: {
+        fontSize: 14,
+        color: '#6B7280',
+        fontWeight: '500',
+    },
+    // Audio Recording Styles
+    audioRecordingContainer: {
         alignItems: 'center',
     },
     recordButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
         backgroundColor: '#8B5CF6',
+        paddingVertical: 16,
+        paddingHorizontal: 24,
+        borderRadius: 25,
+        shadowColor: '#8B5CF6',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 4,
     },
     recordingButton: {
-        backgroundColor: '#ff4444',
+        backgroundColor: '#FF6B6B',
+        shadowColor: '#FF6B6B',
     },
-    audioButtonText: {
+    recordButtonText: {
         color: '#fff',
         fontSize: 16,
         fontWeight: '600',
     },
-    audioPlayer: {
-        paddingVertical: 10,
+    // Audio Playback Styles
+    audioPlaybackContainer: {
+        gap: 16,
     },
     audioStatus: {
-        fontSize: 14,
-        color: '#4CAF50',
-        textAlign: 'center',
-        marginBottom: 15,
-    },
-    audioPlayerControls: {
         flexDirection: 'row',
-        justifyContent: 'space-around',
-    },
-    // Error box styles
-    errorBox: {
-        backgroundColor: '#fdecea',
-        borderColor: '#f5c6cb',
+        alignItems: 'center',
+        gap: 8,
+        padding: 16,
+        backgroundColor: '#F0FDF4',
+        borderRadius: 12,
         borderWidth: 1,
-        borderRadius: 8,
-        padding: 10,
-        marginBottom: 10,
+        borderColor: '#10B981',
     },
-    errorTitle: {
-        color: '#b71c1c',
-        fontWeight: '700',
-        marginBottom: 4,
+    audioStatusText: {
+        color: '#065F46',
+        fontSize: 14,
+        fontWeight: '600',
     },
-    errorText: {
-        color: '#b71c1c',
-        fontSize: 12,
+    audioControls: {
+        flexDirection: 'row',
+        gap: 12,
+    },
+    audioControlButton: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderRadius: 12,
     },
     playButton: {
-        backgroundColor: '#4CAF50',
-        paddingVertical: 10,
-        paddingHorizontal: 20,
-        borderRadius: 20,
+        backgroundColor: '#10B981',
     },
-    playButtonText: {
+    deleteButton: {
+        backgroundColor: '#EF4444',
+    },
+    audioControlText: {
         color: '#fff',
         fontSize: 14,
         fontWeight: '600',
     },
-    deleteAudioButton: {
-        backgroundColor: '#ff4444',
-        paddingVertical: 10,
-        paddingHorizontal: 20,
-        borderRadius: 20,
-    },
-    deleteAudioButtonText: {
-        color: '#fff',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    // Tag management styles
-    tagsHeader: {
+    // Error Styles
+    errorBox: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 10,
+        gap: 8,
+        backgroundColor: '#FEF2F2',
+        borderColor: '#FECACA',
+        borderWidth: 1,
+        borderRadius: 12,
+        padding: 16,
+        marginBottom: 16,
     },
-    manageTagsButton: {
-        backgroundColor: '#8B5CF6',
-        paddingVertical: 8,
-        paddingHorizontal: 16,
-        borderRadius: 20,
-    },
-    manageTagsButtonText: {
-        color: '#fff',
+    errorText: {
+        color: '#DC2626',
         fontSize: 12,
-        fontWeight: '600',
+        flex: 1,
+    },
+    // Tag Management Styles
+    // Inline Tag Input
+    inlineTagInputContainer: {
+        flexDirection: 'row',
+        gap: 12,
+        marginBottom: 16,
+    },
+    inlineTagInput: {
+        flex: 1,
+        borderWidth: 1,
+        borderColor: '#e5e7eb',
+        borderRadius: 12,
+        padding: 14,
+        fontSize: 16,
+        backgroundColor: '#f9fafb',
+        color: '#1f2937',
+    },
+    inlineAddTagButton: {
+        backgroundColor: '#8B5CF6',
+        width: 48,
+        height: 48,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: '#8B5CF6',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 3,
+    },
+    inlineAddTagButtonDisabled: {
+        backgroundColor: '#d1d5db',
+        shadowOpacity: 0,
+        elevation: 0,
     },
     selectedTagsContainer: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        marginTop: 10,
+        gap: 8,
+        marginBottom: 16,
     },
-    selectedTag: {
+    tagChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
         backgroundColor: '#8B5CF6',
-        paddingVertical: 6,
+        paddingVertical: 8,
         paddingHorizontal: 12,
-        borderRadius: 15,
-        marginRight: 8,
-        marginBottom: 8,
+        borderRadius: 20,
+        shadowColor: '#8B5CF6',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 3,
     },
-    selectedTagText: {
+    tagChipText: {
         color: '#fff',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    noTagsText: {
+        fontSize: 14,
+        color: '#9CA3AF',
+        fontStyle: 'italic',
+        marginBottom: 16,
+    },
+    // Quick Tags Section
+    quickTagsSection: {
+        marginTop: 8,
+    },
+    quickTagsTitle: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#6B7280',
+        marginBottom: 10,
+    },
+    quickTagsContainer: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    quickTagChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        backgroundColor: '#f3f4f6',
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: '#e5e7eb',
+    },
+    quickTagChipSelected: {
+        backgroundColor: '#8B5CF6',
+        borderColor: '#7C3AED',
+        shadowColor: '#8B5CF6',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        elevation: 2,
+    },
+    quickTagChipText: {
         fontSize: 12,
-        fontWeight: '500',
-    },
-    // Todo management styles
-    todoControls: {
-        marginTop: 10,
-    },
-    addTodoButton: {
-        backgroundColor: '#8B5CF6',
-        paddingVertical: 10,
-        paddingHorizontal: 20,
-        borderRadius: 20,
-        alignSelf: 'flex-start',
-        marginTop: 10,
-    },
-    addTodoButtonText: {
-        color: '#fff',
-        fontSize: 14,
+        color: '#6B7280',
         fontWeight: '600',
     },
-    // Modal styles
-    modalOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    modalContent: {
-        backgroundColor: '#fff',
-        borderRadius: 20,
-        padding: 20,
-        width: '90%',
-        maxHeight: '80%',
-    },
-    modalHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 20,
-    },
-    modalTitle: {
-        fontSize: 18,
-        fontWeight: 'bold',
-        color: '#333',
-    },
-    closeModalButton: {
-        width: 30,
-        height: 30,
-        borderRadius: 15,
-        backgroundColor: '#f0f0f0',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    closeModalButtonText: {
-        fontSize: 20,
-        color: '#666',
-    },
-    customTagContainer: {
-        flexDirection: 'row',
-        marginBottom: 20,
-    },
-    customTagInput: {
-        flex: 1,
-        borderWidth: 1,
-        borderColor: '#e0e0e0',
-        borderRadius: 8,
-        padding: 12,
-        marginRight: 10,
-        fontSize: 16,
-    },
-    addCustomTagButton: {
-        backgroundColor: '#8B5CF6',
-        paddingVertical: 12,
-        paddingHorizontal: 20,
-        borderRadius: 8,
-        justifyContent: 'center',
-    },
-    addCustomTagButtonText: {
+    quickTagChipTextSelected: {
         color: '#fff',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    tagsList: {
-        maxHeight: 200,
-        marginBottom: 20,
-    },
-    tagOption: {
-        backgroundColor: '#f0f0f0',
-        paddingVertical: 10,
-        paddingHorizontal: 15,
-        borderRadius: 20,
-        margin: 5,
-        alignItems: 'center',
-        flex: 1,
-    },
-    selectedTagOption: {
-        backgroundColor: '#8B5CF6',
-    },
-    tagOptionText: {
-        fontSize: 14,
-        color: '#333',
-        fontWeight: '500',
-    },
-    selectedTagOptionText: {
-        color: '#fff',
-    },
-    modalActions: {
-        flexDirection: 'row',
-        justifyContent: 'space-around',
-    },
-    cancelButton: {
-        backgroundColor: '#f0f0f0',
-        paddingVertical: 12,
-        paddingHorizontal: 30,
-        borderRadius: 8,
-    },
-    cancelButtonText: {
-        color: '#666',
-        fontSize: 16,
-        fontWeight: '600',
-    },
-    todoInput: {
-        borderWidth: 1,
-        borderColor: '#e0e0e0',
-        borderRadius: 8,
-        padding: 12,
-        fontSize: 16,
-        marginBottom: 20,
-        minHeight: 80,
     },
 });

@@ -3,6 +3,7 @@ package com.anonymous.SmartShot
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.ContentResolver
 import android.content.Intent
@@ -15,6 +16,7 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -29,6 +31,7 @@ import java.io.File
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import android.os.Environment
 
 class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     
@@ -906,8 +909,13 @@ class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBase
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit("ScreenshotDetected", params)
         
-        // Show local notification
-        showNotification()
+        // Only show notification if background service is NOT running
+        // If background service is running, it will handle the notification to avoid duplicates
+        if (!isBackgroundServiceRunning()) {
+            showNotification()
+        } else {
+            Log.d("ScreenshotModule", "Background service is running, skipping notification to avoid duplicates")
+        }
     }
     
     private fun createNotificationChannel() {
@@ -970,21 +978,211 @@ class ScreenshotModule(reactContext: ReactApplicationContext) : ReactContextBase
             // Create notification channel for Android 8.0+
             createNotificationChannel()
             
+            // Open app intent
+            val openAppIntent = Intent(context, Class.forName("com.anonymous.SmartShot.MainActivity")).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("openScreenshotsTab", true)
+            }
+            val openAppPending = PendingIntent.getActivity(
+                context, 100, openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Edit action - opens edit screen via deep link
+            val editDeepLink = Uri.parse("smartshot:///edit-screenshot")
+            val editIntent = Intent(Intent.ACTION_VIEW, editDeepLink).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val editPending = PendingIntent.getActivity(
+                context, 102, editIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Dismiss action - dismisses the notification
+            val dismissIntent = Intent(context, Class.forName("com.anonymous.SmartShot.ScreenshotDetectionService")).apply {
+                action = ScreenshotDetectionService.ACTION_DISMISS_NOTIFICATION
+                putExtra(ScreenshotDetectionService.EXTRA_NOTIFICATION_ID, NOTIFICATION_ID)
+            }
+            val dismissPending = PendingIntent.getService(
+                context, 103, dismissIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setContentTitle("Screenshot Detected! 📸")
                 .setContentText("Someone took a screenshot of the app")
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setAutoCancel(true)
+                .setContentIntent(openAppPending)
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setVibrate(longArrayOf(0, 1000, 500, 1000))
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                // Add action buttons - these will appear below the notification
+                .addAction(android.R.drawable.ic_menu_view, "Open", openAppPending)
+                .addAction(android.R.drawable.ic_menu_edit, "Edit", editPending)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dismiss", dismissPending)
+                .setStyle(NotificationCompat.BigTextStyle()
+                    .bigText("A screenshot was detected. Use the buttons below to open the app, edit the screenshot, or dismiss this notification."))
                 .build()
             
             notificationManager.notify(NOTIFICATION_ID, notification)
-            Log.d("ScreenshotModule", "Notification displayed successfully")
+            Log.d("ScreenshotModule", "Notification displayed successfully with actions")
             
         } catch (e: Exception) {
-            Log.e("ScreenshotModule", "Error showing notification: ${e.message}")
+            Log.e("ScreenshotModule", "Error showing notification: ${e.message}", e)
+        }
+    }
+    
+    @ReactMethod
+    fun getAppSpecificDirectoryPath(promise: Promise) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val appSpecificDir = context.getExternalFilesDir(null)
+                if (appSpecificDir != null) {
+                    val smartShotDir = File(appSpecificDir, "SmartShot")
+                    // Create directory if it doesn't exist
+                    if (!smartShotDir.exists()) {
+                        val created = smartShotDir.mkdirs()
+                        if (created && smartShotDir.exists() && smartShotDir.isDirectory) {
+                            Log.d("ScreenshotModule", "Created and returning app-specific directory: ${smartShotDir.absolutePath}")
+                            promise.resolve(smartShotDir.absolutePath)
+                            return
+                        }
+                    } else if (smartShotDir.isDirectory) {
+                        Log.d("ScreenshotModule", "Returning existing app-specific directory: ${smartShotDir.absolutePath}")
+                        promise.resolve(smartShotDir.absolutePath)
+                        return
+                    }
+                }
+            }
+            promise.resolve(null)
+        } catch (e: Exception) {
+            Log.e("ScreenshotModule", "Error getting app-specific directory path: ${e.message}")
+            promise.reject("DIRECTORY_ERROR", "Failed to get app-specific directory path: ${e.message}")
+        }
+    }
+    
+    @ReactMethod
+    fun createExternalStorageDirectory(promise: Promise) {
+        try {
+            Log.d("ScreenshotModule", "Creating external storage directory...")
+            
+            // On Android 10+, direct writes to /storage/emulated/0 are restricted
+            // For Android 10+, use app-specific external directory (no permissions needed)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val appSpecificDir = context.getExternalFilesDir(null)
+                    if (appSpecificDir != null) {
+                        val smartShotDir = File(appSpecificDir, "SmartShot")
+                        Log.d("ScreenshotModule", "Using app-specific directory: ${smartShotDir.absolutePath}")
+                        
+                        if (!smartShotDir.exists()) {
+                            val created = smartShotDir.mkdirs()
+                            if (created && smartShotDir.exists() && smartShotDir.isDirectory) {
+                                Log.d("ScreenshotModule", "Successfully created app-specific directory: ${smartShotDir.absolutePath}")
+                                promise.resolve(true)
+                                return
+                            }
+                        } else if (smartShotDir.isDirectory) {
+                            Log.d("ScreenshotModule", "App-specific directory already exists: ${smartShotDir.absolutePath}")
+                            promise.resolve(true)
+                            return
+                        }
+                    }
+                } catch (appDirError: Exception) {
+                    Log.w("ScreenshotModule", "App-specific directory creation failed, trying Downloads: ${appDirError.message}")
+                }
+            }
+            
+            // Check permission first (for Android 10-12 if using Downloads)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                val hasWritePermission = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+                
+                if (!hasWritePermission) {
+                    val errorMsg = "WRITE_EXTERNAL_STORAGE permission not granted. Please grant storage permission first, or use the 'Select Folder' option in Settings."
+                    Log.e("ScreenshotModule", errorMsg)
+                    promise.reject("PERMISSION_DENIED", errorMsg)
+                    return
+                }
+            }
+            
+            // Use Pictures directory for better privacy and accessibility
+            // Pictures folder is more accessible on Android 10+ and is more appropriate for image-related data
+            val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            val smartShotDir = File(picturesDir, "SmartShot")
+            
+            Log.d("ScreenshotModule", "Attempting to create directory at: ${smartShotDir.absolutePath}")
+            
+            // Check if Pictures directory exists and is writable
+            if (picturesDir == null || !picturesDir.exists()) {
+                // Try to create Pictures directory (should exist, but just in case)
+                try {
+                    val picturesCreated = picturesDir?.mkdirs()
+                    if (picturesCreated == null || picturesCreated == false || !picturesDir.exists()) {
+                        val errorMsg = "Pictures directory does not exist and cannot be created: ${picturesDir?.absolutePath ?: "null"}"
+                        Log.e("ScreenshotModule", errorMsg)
+                        promise.reject("PICTURES_NOT_ACCESSIBLE", errorMsg)
+                        return
+                    }
+                } catch (e: Exception) {
+                    val errorMsg = "Cannot access Pictures directory: ${e.message}"
+                    Log.e("ScreenshotModule", errorMsg, e)
+                    promise.reject("PICTURES_NOT_ACCESSIBLE", errorMsg)
+                    return
+                }
+            }
+            
+            // Check if Pictures directory is writable
+            if (!picturesDir.canWrite()) {
+                val errorMsg = "Cannot write to Pictures directory: ${picturesDir.absolutePath}. Permission may be denied or storage may be full. On Android 10+, please use 'Select Folder' in Settings."
+                Log.e("ScreenshotModule", errorMsg)
+                promise.reject("WRITE_DENIED", errorMsg)
+                return
+            }
+            
+            // Create directory if it doesn't exist
+            if (!smartShotDir.exists()) {
+                try {
+                    val created = smartShotDir.mkdirs()
+                    if (created) {
+                        // Verify it was actually created
+                        if (smartShotDir.exists() && smartShotDir.isDirectory) {
+                            Log.d("ScreenshotModule", "Successfully created directory: ${smartShotDir.absolutePath}")
+                            promise.resolve(true)
+                        } else {
+                            val errorMsg = "Directory creation reported success but directory does not exist: ${smartShotDir.absolutePath}"
+                            Log.e("ScreenshotModule", errorMsg)
+                            promise.reject("VERIFICATION_FAILED", errorMsg)
+                        }
+                    } else {
+                        val errorMsg = "mkdirs() returned false. Cannot create directory: ${smartShotDir.absolutePath}. Check permissions and storage space."
+                        Log.e("ScreenshotModule", errorMsg)
+                        promise.reject("CREATION_FAILED", errorMsg)
+                    }
+                } catch (createException: Exception) {
+                    val errorMsg = "Exception during directory creation: ${createException.message}. Path: ${smartShotDir.absolutePath}"
+                    Log.e("ScreenshotModule", errorMsg, createException)
+                    promise.reject("CREATION_EXCEPTION", errorMsg)
+                }
+            } else {
+                if (smartShotDir.isDirectory) {
+                    Log.d("ScreenshotModule", "Directory already exists: ${smartShotDir.absolutePath}")
+                    promise.resolve(true)
+                } else {
+                    val errorMsg = "Path exists but is not a directory: ${smartShotDir.absolutePath}"
+                    Log.e("ScreenshotModule", errorMsg)
+                    promise.reject("NOT_A_DIRECTORY", errorMsg)
+                }
+            }
+        } catch (e: Exception) {
+            val errorMsg = "Unexpected error creating directory: ${e.message}. Check permissions, storage space, and Android version."
+            Log.e("ScreenshotModule", errorMsg, e)
+            promise.reject("DIRECTORY_ERROR", errorMsg)
         }
     }
 }

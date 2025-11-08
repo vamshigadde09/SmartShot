@@ -1,7 +1,11 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { Colors } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getAllScreenshots, readFromExternalStorage } from '@/utils/fileStorage';
+import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -61,6 +65,14 @@ const SmartImage = ({ uri, style, mode }) => {
 };
 
 export default function GalleryScreen() {
+    const colorScheme = useColorScheme();
+    const isDark = colorScheme === 'dark';
+    const themeColors = isDark ? Colors.dark : Colors.light;
+
+    // View toggle state ('screenshots' or 'tags')
+    const [activeView, setActiveView] = useState('screenshots');
+
+    // Screenshots state
     const [screenshots, setScreenshots] = useState([]);
     const [loading, setLoading] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
@@ -68,6 +80,11 @@ export default function GalleryScreen() {
     const [viewerVisible, setViewerVisible] = useState(false);
     const [viewerIndex, setViewerIndex] = useState(0);
     const viewerListRef = React.useRef(null);
+
+    // Tags state
+    const [tags, setTags] = useState([]);
+    const [tagsLoading, setTagsLoading] = useState(false);
+    const [tagsRefreshing, setTagsRefreshing] = useState(false);
 
     const getCurrentItem = () => {
         if (!screenshots || screenshots.length === 0) return null;
@@ -150,8 +167,23 @@ export default function GalleryScreen() {
     };
 
     useEffect(() => {
-        loadScreenshots(true);
-    }, []);
+        if (activeView === 'screenshots') {
+            loadScreenshots(true);
+        } else {
+            loadTags();
+        }
+    }, [activeView]);
+
+    // Auto-refresh when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            if (activeView === 'screenshots') {
+                loadScreenshots(true);
+            } else {
+                loadTags();
+            }
+        }, [activeView])
+    );
 
     // Preload next batch of images for smoother scrolling
     useEffect(() => {
@@ -195,22 +227,60 @@ export default function GalleryScreen() {
 
     const loadEditedIndex = async () => {
         try {
-            const path = await getStorageFile();
-            const info = await FileSystem.getInfoAsync(path);
-            if (!info.exists) return { ids: new Set(), uris: new Set() };
-            const json = await FileSystem.readAsStringAsync(path);
-            const items = JSON.parse(json);
+            // Use getAllScreenshots which checks internal storage and already sorts by updatedAt
+            let items = await getAllScreenshots();
+
+            // If still no items, try local storage as final fallback
+            if (!items || items.length === 0) {
+                try {
+                    const path = await getStorageFile();
+                    const info = await FileSystem.getInfoAsync(path);
+                    if (info.exists) {
+                        const json = await FileSystem.readAsStringAsync(path);
+                        const localItems = JSON.parse(json);
+                        if (localItems && Array.isArray(localItems)) {
+                            items = localItems;
+                            // Sort by updatedAt if available
+                            items.sort((a, b) => {
+                                const aTime = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+                                const bTime = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+                                return bTime - aTime; // Latest first
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.log('Local storage check failed:', e);
+                }
+            }
+
             const ids = new Set();
             const uris = new Set();
-            for (const it of items) {
-                const edited = Boolean((it.text && it.text.trim()) || it.audio || it.reminder || it.isTodo || (it.tags && String(it.tags).trim()));
-                if (!edited) continue;
-                if (it.id) ids.add(String(it.id));
-                if (it.uri) uris.add(String(it.uri));
+            const editedMap = new Map(); // Map to store edited items with their updatedAt for sorting
+            for (const it of items || []) {
+                // Filter logic:
+                // - Show screenshots that have text, audio, or reminder (even if they also have tags)
+                // - DON'T show screenshots that ONLY have tags (no text, no audio, no reminder)
+                // - Screenshots with only tags should be shown in the tags view, not in screenshots view
+                const hasText = it.text && it.text.trim();
+                const hasAudio = Boolean(it.audio);
+                const hasReminder = Boolean(it.reminder);
+                const hasOtherContent = hasText || hasAudio || hasReminder;
+
+                // Only include if it has content other than just tags
+                if (!hasOtherContent) continue;
+                if (it.id) {
+                    ids.add(String(it.id));
+                    editedMap.set(String(it.id), it);
+                }
+                if (it.uri) {
+                    uris.add(String(it.uri));
+                    editedMap.set(String(it.uri), it);
+                }
             }
-            return { ids, uris };
-        } catch {
-            return { ids: new Set(), uris: new Set() };
+            return { ids, uris, editedMap };
+        } catch (error) {
+            console.error('Error loading edited index:', error);
+            return { ids: new Set(), uris: new Set(), editedMap: new Map() };
         }
     };
 
@@ -239,9 +309,31 @@ export default function GalleryScreen() {
                     // Get screenshots using native module
                     const screenshots = await ScreenshotModule.getScreenshots();
                     // Filter to only those that have been edited in our storage
-                    const { ids, uris } = await loadEditedIndex();
+                    const { ids, uris, editedMap } = await loadEditedIndex();
                     const filtered = (screenshots || []).filter((s) => ids.has(String(s.id)) || uris.has(String(s.uri)));
-                    setScreenshots(filtered);
+
+                    // Sort by updatedAt (latest edited first)
+                    const sorted = filtered.sort((a, b) => {
+                        const aEdited = editedMap.get(String(a.id)) || editedMap.get(String(a.uri));
+                        const bEdited = editedMap.get(String(b.id)) || editedMap.get(String(b.uri));
+
+                        const aTime = aEdited?.updatedAt ? new Date(aEdited.updatedAt).getTime() : 0;
+                        const bTime = bEdited?.updatedAt ? new Date(bEdited.updatedAt).getTime() : 0;
+
+                        // If both have updatedAt, sort by it (latest first)
+                        if (aTime > 0 && bTime > 0) {
+                            return bTime - aTime;
+                        }
+                        // If only one has updatedAt, prioritize it
+                        if (aTime > 0) return -1;
+                        if (bTime > 0) return 1;
+                        // Otherwise, keep original order (or sort by dateAdded if available)
+                        const aDate = a.dateAdded || 0;
+                        const bDate = b.dateAdded || 0;
+                        return bDate - aDate;
+                    });
+
+                    setScreenshots(sorted);
                 }
             } else {
                 // For iOS, show empty state
@@ -264,10 +356,16 @@ export default function GalleryScreen() {
 
 
     const onRefresh = useCallback(async () => {
-        setRefreshing(true);
-        await loadScreenshots(true);
-        setRefreshing(false);
-    }, []);
+        if (activeView === 'screenshots') {
+            setRefreshing(true);
+            await loadScreenshots(true);
+            setRefreshing(false);
+        } else {
+            setTagsRefreshing(true);
+            await loadTags();
+            setTagsRefreshing(false);
+        }
+    }, [activeView]);
 
     const formatDate = (timestamp) => {
         const date = new Date(timestamp * 1000);
@@ -288,80 +386,273 @@ export default function GalleryScreen() {
         // scroll after modal shows handled by onShow
     };
 
-    const renderScreenshot = useCallback(({ item: screenshot, index }) => (
-        <TouchableOpacity
-            key={screenshot.id || index}
-            style={styles.imageContainer}
-            onPress={() => openViewer(index)}
-        >
-            <SmartImage
-                uri={screenshot.uri}
-                style={styles.image}
-                mode="cover"
-                onError={() => {
-                    console.log('Failed to load image:', screenshot.uri);
+    const openViewScreen = (screenshot) => {
+        router.push({
+            pathname: '/view-screenshot',
+            params: {
+                screenshotUri: screenshot.uri,
+                screenshotId: screenshot.id
+            }
+        });
+    };
+
+    // Load tags function
+    const loadTags = async () => {
+        setTagsLoading(true);
+        try {
+            // Use getAllScreenshots which checks both local and external storage
+            let items = await getAllScreenshots();
+
+            // If no items found, try loading from external storage directly as fallback
+            if (!items || items.length === 0) {
+                try {
+                    const externalData = await readFromExternalStorage();
+                    if (externalData) {
+                        const externalItems = JSON.parse(externalData);
+                        if (externalItems && externalItems.length > 0) {
+                            items = externalItems;
+                        }
+                    }
+                } catch (e) {
+                    console.log('External storage check failed:', e);
+                }
+            }
+
+            const map = new Map();
+            for (const it of items) {
+                if (!it.tags) continue;
+                const list = String(it.tags)
+                    .split(',')
+                    .map(t => t.trim())
+                    .filter(Boolean);
+                for (const t of list) {
+                    const existing = map.get(t) || { count: 0, firstImageUri: null };
+                    existing.count = existing.count + 1;
+                    // Set first image URI if not already set
+                    if (!existing.firstImageUri && it.uri) {
+                        existing.firstImageUri = it.uri;
+                    }
+                    map.set(t, existing);
+                }
+            }
+            const rows = Array.from(map.entries())
+                .map(([name, data]) => ({
+                    name,
+                    count: data.count,
+                    coverUri: data.firstImageUri
+                }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+            setTags(rows);
+        } catch (e) {
+            console.error('Failed to load tags', e);
+            Alert.alert('Error', 'Failed to load tags');
+            setTags([]);
+        } finally {
+            setTagsLoading(false);
+        }
+    };
+
+    const openTag = (tag) => {
+        router.push({ pathname: '/tag-images', params: { tag: tag.name } });
+    };
+
+    const renderScreenshot = useCallback(({ item: screenshot, index }) => {
+        const imageContainerBg = isDark ? Colors.dark.card : Colors.light.surface;
+        return (
+            <TouchableOpacity
+                key={screenshot.id || index}
+                style={[styles.imageContainer, { backgroundColor: imageContainerBg }]}
+                onPress={() => {
+                    router.push({
+                        pathname: '/view-screenshot',
+                        params: {
+                            screenshotUri: screenshot.uri,
+                            screenshotId: screenshot.id
+                        }
+                    });
                 }}
-            />
-        </TouchableOpacity>
-    ), []);
+                onLongPress={() => {
+                    setViewerIndex(index);
+                    setViewerVisible(true);
+                }}
+            >
+                <SmartImage
+                    uri={screenshot.uri}
+                    style={styles.image}
+                    mode="cover"
+                    onError={() => {
+                        console.log('Failed to load image:', screenshot.uri);
+                    }}
+                />
+            </TouchableOpacity>
+        );
+    }, [isDark]);
+
+    const renderTag = useCallback(({ item: tag }) => {
+        const scale = new Animated.Value(1);
+        const onPressIn = () => Animated.spring(scale, { toValue: 0.98, useNativeDriver: true }).start();
+        const onPressOut = () => Animated.spring(scale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
+        const tagCardBg = isDark ? Colors.dark.card : Colors.light.card;
+        const tagThumbBg = isDark ? Colors.dark.surface : Colors.light.surface;
+        return (
+            <Animated.View style={[styles.tagCard, { transform: [{ scale }], backgroundColor: tagCardBg }]}>
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPressIn={onPressIn}
+                    onPressOut={onPressOut}
+                    onPress={() => {
+                        router.push({ pathname: '/tag-images', params: { tag: tag.name } });
+                    }}
+                >
+                    <View style={[styles.tagThumbWrap, { backgroundColor: tagThumbBg }]}>
+                        {tag.coverUri ? (
+                            <Image source={{ uri: tag.coverUri }} style={styles.tagThumb} resizeMode="cover" />
+                        ) : (
+                            <View style={styles.tagThumb} />
+                        )}
+                        <ThemedText style={styles.tagCardTitle} numberOfLines={1}>{tag.name}</ThemedText>
+                        <ThemedText style={styles.tagCount}>{tag.count} item{tag.count !== 1 ? 's' : ''}</ThemedText>
+                    </View>
+                </TouchableOpacity>
+            </Animated.View>
+        );
+    }, [isDark]);
+
+    const toggleContainerBg = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)';
+    const settingsButtonBg = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)';
 
     return (
         <ThemedView style={styles.container}>
-            <View style={styles.header}>
-                <ThemedText type="title" style={styles.title}>
-                    Screenshot Gallery
-                </ThemedText>
-                <ThemedText style={styles.subtitle}>
-                    {screenshots.length} screenshots found
-                </ThemedText>
+            <View style={[styles.header, { backgroundColor: themeColors.background, borderBottomColor: themeColors.border }]}>
+                {/* Title Row */}
+                <View style={styles.headerTitleRow}>
+                    <View style={styles.titleContainer}>
+                        <ThemedText type="title" style={styles.title}>
+                            Gallery
+                        </ThemedText>
+                    </View>
+                    <TouchableOpacity
+                        style={[styles.settingsButton, { backgroundColor: settingsButtonBg }]}
+                        onPress={() => router.push('/(tabs)/settings')}
+                    >
+                        <Ionicons name="settings-outline" size={24} color="#8B5CF6" />
+                    </TouchableOpacity>
+                </View>
+
+                {/* Toggle Section */}
+                <View style={styles.headerTopRow}>
+                    <View style={[styles.toggleContainer, { backgroundColor: toggleContainerBg }]}>
+                        <TouchableOpacity
+                            style={[styles.toggleButton, activeView === 'screenshots' && styles.toggleButtonActive]}
+                            onPress={() => setActiveView('screenshots')}
+                        >
+                            <ThemedText style={[styles.toggleButtonText, activeView === 'screenshots' && styles.toggleButtonTextActive]}>
+                                Screenshots
+                            </ThemedText>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.toggleButton, activeView === 'tags' && styles.toggleButtonActive]}
+                            onPress={() => setActiveView('tags')}
+                        >
+                            <ThemedText style={[styles.toggleButtonText, activeView === 'tags' && styles.toggleButtonTextActive]}>
+                                Tags
+                            </ThemedText>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+
             </View>
 
-            {loading && screenshots.length === 0 ? (
-                <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="large" color="#8B5CF6" />
-                    <ThemedText style={styles.loadingText}>Loading...</ThemedText>
-                </View>
-            ) : (
-                <Animated.View style={{ flex: 1, opacity: contentOpacity }}>
-                    <FlatList
-                        data={screenshots}
-                        keyExtractor={(item, idx) => String(item.id || item.uri || idx)}
-                        numColumns={2}
-                        columnWrapperStyle={styles.columnWrapper}
-                        contentContainerStyle={screenshots.length === 0 ? styles.listEmptyContainer : styles.listContent}
-                        renderItem={renderScreenshot}
-                        refreshing={refreshing}
-                        onRefresh={onRefresh}
-                        windowSize={10}
-                        initialNumToRender={20}
-                        maxToRenderPerBatch={8}
-                        updateCellsBatchingPeriod={50}
-                        removeClippedSubviews
-                        ListEmptyComponent={
-                            <View style={styles.emptyContainer}>
-                                <ThemedText style={styles.emptyText}>
-                                    No screenshots found
-                                </ThemedText>
-                                <ThemedText style={styles.emptySubtext}>
-                                    Take some screenshots to see them here
-                                </ThemedText>
-                                <TouchableOpacity style={styles.refreshButton} onPress={() => loadScreenshots(true)}>
-                                    <ThemedText style={styles.refreshButtonText}>
-                                        Refresh
+            {/* Screenshots View */}
+            {activeView === 'screenshots' && (
+                <>
+                    {loading && screenshots.length === 0 ? (
+                        <View style={styles.loadingContainer}>
+                            <ActivityIndicator size="large" color="#8B5CF6" />
+                            <ThemedText style={styles.loadingText} darkColor={Colors.dark.textSecondary} lightColor={Colors.light.textSecondary}>
+                                Loading...
+                            </ThemedText>
+                        </View>
+                    ) : (
+                        <Animated.View style={{ flex: 1, opacity: contentOpacity }}>
+                            <FlatList
+                                data={screenshots}
+                                keyExtractor={(item, idx) => String(item.id || item.uri || idx)}
+                                numColumns={2}
+                                columnWrapperStyle={styles.columnWrapper}
+                                contentContainerStyle={screenshots.length === 0 ? styles.listEmptyContainer : styles.listContent}
+                                renderItem={renderScreenshot}
+                                refreshing={refreshing}
+                                onRefresh={onRefresh}
+                                windowSize={10}
+                                initialNumToRender={20}
+                                maxToRenderPerBatch={8}
+                                updateCellsBatchingPeriod={50}
+                                removeClippedSubviews
+                                ListEmptyComponent={
+                                    <View style={styles.emptyContainer}>
+                                        <ThemedText style={styles.emptyText} darkColor={Colors.dark.text} lightColor={Colors.light.text}>
+                                            No screenshots found
+                                        </ThemedText>
+                                        <ThemedText style={styles.emptySubtext} darkColor={Colors.dark.textSecondary} lightColor={Colors.light.textSecondary}>
+                                            Take some screenshots to see them here
+                                        </ThemedText>
+                                        <TouchableOpacity style={styles.refreshButton} onPress={() => loadScreenshots(true)}>
+                                            <ThemedText style={styles.refreshButtonText}>
+                                                Refresh
+                                            </ThemedText>
+                                        </TouchableOpacity>
+                                    </View>
+                                }
+                                ListFooterComponent={
+                                    loading && screenshots.length > 0 ? (
+                                        <View style={styles.loadingFooter}>
+                                            <ActivityIndicator size="small" color="#8B5CF6" />
+                                            <ThemedText style={styles.loadingFooterText} darkColor={Colors.dark.textSecondary} lightColor={Colors.light.textSecondary}>
+                                                Loading more...
+                                            </ThemedText>
+                                        </View>
+                                    ) : null
+                                }
+                            />
+                        </Animated.View>
+                    )}
+                </>
+            )}
+
+            {/* Tags View */}
+            {activeView === 'tags' && (
+                <>
+                    {tagsLoading && tags.length === 0 ? (
+                        <View style={styles.loadingContainer}>
+                            <ActivityIndicator size="large" color="#8B5CF6" />
+                            <ThemedText style={styles.loadingText} darkColor={Colors.dark.textSecondary} lightColor={Colors.light.textSecondary}>
+                                Loading tags...
+                            </ThemedText>
+                        </View>
+                    ) : (
+                        <FlatList
+                            data={tags}
+                            keyExtractor={(item) => item.name}
+                            renderItem={renderTag}
+                            numColumns={2}
+                            columnWrapperStyle={styles.tagsColumnWrapper}
+                            contentContainerStyle={tags.length === 0 ? styles.listEmptyContainer : styles.tagsGridContent}
+                            refreshing={tagsRefreshing}
+                            onRefresh={onRefresh}
+                            ListEmptyComponent={
+                                <View style={styles.emptyContainer}>
+                                    <ThemedText style={styles.emptyText} darkColor={Colors.dark.text} lightColor={Colors.light.text}>
+                                        No tags yet
                                     </ThemedText>
-                                </TouchableOpacity>
-                            </View>
-                        }
-                        ListFooterComponent={
-                            loading && screenshots.length > 0 ? (
-                                <View style={styles.loadingFooter}>
-                                    <ActivityIndicator size="small" color="#8B5CF6" />
-                                    <ThemedText style={styles.loadingFooterText}>Loading more...</ThemedText>
+                                    <ThemedText style={styles.emptySubtext} darkColor={Colors.dark.textSecondary} lightColor={Colors.light.textSecondary}>
+                                        Add tags to screenshots to see them here
+                                    </ThemedText>
                                 </View>
-                            ) : null
-                        }
-                    />
-                </Animated.View>
+                            }
+                        />
+                    )}
+                </>
             )}
 
             <Modal
@@ -431,16 +722,69 @@ export default function GalleryScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#121212',
+        paddingBottom: 100, // Add padding for floating dock
     },
     header: {
-        backgroundColor: '#121212',
         paddingTop: 60,
         paddingBottom: 20,
         paddingHorizontal: 20,
+        borderBottomWidth: 1,
     },
-    title: { color: '#FFF', fontSize: 20, fontWeight: '600' },
-    subtitle: { color: '#BBB' },
+    headerTitleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 16,
+    },
+    titleContainer: {
+        flex: 1,
+        alignItems: 'center',
+    },
+    headerTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 12,
+    },
+    toggleContainer: {
+        flexDirection: 'row',
+        borderRadius: 12,
+        padding: 4,
+        flex: 1,
+        maxWidth: 300,
+    },
+    settingsButton: {
+        padding: 8,
+        borderRadius: 8,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    toggleButton: {
+        flex: 1,
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    toggleButtonActive: {
+        backgroundColor: '#8B5CF6',
+    },
+    toggleButtonText: {
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    toggleButtonTextActive: {
+        color: '#FFF',
+    },
+    title: {
+        fontSize: 26,
+        fontWeight: '700',
+    },
+    subtitle: {
+        textAlign: 'center',
+        marginTop: 8,
+    },
     scrollView: {
         flex: 1,
     },
@@ -452,7 +796,6 @@ const styles = StyleSheet.create({
     },
     loadingText: {
         fontSize: 16,
-        color: '#666',
     },
     emptyContainer: {
         flex: 1,
@@ -463,12 +806,10 @@ const styles = StyleSheet.create({
     emptyText: {
         fontSize: 18,
         fontWeight: 'bold',
-        color: '#666',
         marginBottom: 10,
     },
     emptySubtext: {
         fontSize: 14,
-        color: '#999',
         textAlign: 'center',
         marginBottom: 20,
     },
@@ -483,7 +824,6 @@ const styles = StyleSheet.create({
         margin: 2,
         borderRadius: 12,
         overflow: 'hidden',
-        backgroundColor: '#1F1F1F',
     },
     image: {
         width: '100%',
@@ -611,7 +951,45 @@ const styles = StyleSheet.create({
     },
     loadingFooterText: {
         marginLeft: 10,
-        color: '#666',
         fontSize: 14,
+    },
+    // Tags styles
+    tagsColumnWrapper: { justifyContent: 'space-between', paddingHorizontal: 2 },
+    tagsGridContent: { paddingTop: 0, paddingBottom: 0 },
+    tagCard: {
+        flex: 1,
+        marginHorizontal: 2,
+        marginBottom: 4,
+        borderRadius: 12,
+        overflow: 'hidden',
+    },
+    tagThumbWrap: {
+        height: 160,
+        borderRadius: 12,
+        overflow: 'hidden',
+        position: 'relative',
+    },
+    tagThumb: {
+        width: '100%',
+        height: '100%',
+    },
+    tagCardTitle: {
+        position: 'absolute',
+        bottom: 30,
+        width: '100%',
+        padding: 10,
+        fontWeight: '600',
+        color: '#fff',
+        fontSize: 16,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+    },
+    tagCount: {
+        position: 'absolute',
+        bottom: 0,
+        width: '100%',
+        padding: 10,
+        color: '#fff',
+        fontSize: 12,
+        backgroundColor: 'rgba(0,0,0,0.5)',
     },
 });

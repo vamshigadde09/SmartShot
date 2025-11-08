@@ -1,29 +1,19 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { AppTheme as theme } from '@/constants/theme';
-import * as FileSystem from 'expo-file-system/legacy';
-import { router } from 'expo-router';
+import { getAllScreenshots, readFromExternalStorage } from '@/utils/fileStorage';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Animated,
     FlatList,
+    Image,
     StyleSheet,
     TouchableOpacity,
     View
 } from 'react-native';
-
-const STORAGE_FILE = FileSystem.documentDirectory + 'screenshots.json';
-const FALLBACK_STORAGE_FILE = FileSystem.cacheDirectory + 'screenshots.json';
-
-const getStorageFile = async () => {
-    try {
-        const info = await FileSystem.getInfoAsync(FileSystem.documentDirectory);
-        return info.exists ? STORAGE_FILE : FALLBACK_STORAGE_FILE;
-    } catch {
-        return FALLBACK_STORAGE_FILE;
-    }
-};
 
 export default function TagsScreen() {
     const [tags, setTags] = useState([]);
@@ -32,31 +22,67 @@ export default function TagsScreen() {
 
     useEffect(() => { loadTags(); }, []);
 
+    // Auto-refresh when screen comes into focus
+    useFocusEffect(
+        useCallback(() => {
+            loadTags();
+        }, [])
+    );
+
     const loadTags = async () => {
         setLoading(true);
         try {
-            const path = await getStorageFile();
-            const info = await FileSystem.getInfoAsync(path);
-            if (!info.exists) {
-                setTags([]);
-                return;
+            // Use getAllScreenshots which checks both local and external storage
+            let items = await getAllScreenshots();
+
+            // If no items found, try loading from external storage directly as fallback
+            if (!items || items.length === 0) {
+                try {
+                    const externalData = await readFromExternalStorage();
+                    if (externalData) {
+                        const externalItems = JSON.parse(externalData);
+                        if (externalItems && externalItems.length > 0) {
+                            items = externalItems;
+                        }
+                    }
+                } catch (e) {
+                    console.log('External storage check failed:', e);
+                }
             }
-            const json = await FileSystem.readAsStringAsync(path);
-            const items = JSON.parse(json);
+
+            console.log('Loaded items for tags:', items?.length || 0);
+            console.log('Items with tags:', items.filter(it => it.tags).length);
+            console.log('Sample items:', items.slice(0, 3).map(it => ({ id: it.id, tags: it.tags, hasTags: !!it.tags })));
+
             const map = new Map();
             for (const it of items) {
-                if (!it.tags) continue;
+                if (!it.tags) {
+                    console.log('Skipping item without tags:', it.id);
+                    continue;
+                }
+                console.log('Processing tags for item:', it.id, 'tags:', it.tags);
                 const list = String(it.tags)
                     .split(',')
                     .map(t => t.trim())
                     .filter(Boolean);
+                console.log('Parsed tag list:', list);
                 for (const t of list) {
-                    const prev = map.get(t) || 0;
-                    map.set(t, prev + 1);
+                    const existing = map.get(t) || { count: 0, firstImageUri: null };
+                    existing.count = existing.count + 1;
+                    // Set first image URI if not already set
+                    if (!existing.firstImageUri && it.uri) {
+                        existing.firstImageUri = it.uri;
+                    }
+                    map.set(t, existing);
                 }
             }
+            console.log('Final tag map:', Array.from(map.entries()).map(([name, data]) => ({ name, count: data.count })));
             const rows = Array.from(map.entries())
-                .map(([name, count]) => ({ name, count }))
+                .map(([name, data]) => ({
+                    name,
+                    count: data.count,
+                    coverUri: data.firstImageUri
+                }))
                 .sort((a, b) => a.name.localeCompare(b.name));
             setTags(rows);
         } catch (e) {
@@ -78,14 +104,30 @@ export default function TagsScreen() {
         router.push({ pathname: '/tag-images', params: { tag: tag.name } });
     };
 
-    const renderItem = ({ item }) => (
-        <TouchableOpacity style={styles.card} onPress={() => openTag(item)}>
-            <View style={styles.thumbWrap}>
-                <View style={styles.thumb} />
-            </View>
-            <ThemedText style={styles.cardTitle} numberOfLines={1}>{item.name}</ThemedText>
-        </TouchableOpacity>
-    );
+    const renderItem = ({ item }) => {
+        const scale = new Animated.Value(1);
+        const onPressIn = () => Animated.spring(scale, { toValue: 0.98, useNativeDriver: true }).start();
+        const onPressOut = () => Animated.spring(scale, { toValue: 1, friction: 4, useNativeDriver: true }).start();
+        return (
+            <Animated.View style={[styles.card, { transform: [{ scale }] }]}>
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPressIn={onPressIn}
+                    onPressOut={onPressOut}
+                    onPress={() => openTag(item)}
+                >
+                    <View style={styles.thumbWrap}>
+                        {item.coverUri ? (
+                            <Image source={{ uri: item.coverUri }} style={styles.thumb} resizeMode="cover" />
+                        ) : (
+                            <View style={styles.thumb} />
+                        )}
+                        <ThemedText style={styles.cardTitle} numberOfLines={1}>{item.name}</ThemedText>
+                    </View>
+                </TouchableOpacity>
+            </Animated.View>
+        );
+    };
 
     return (
         <ThemedView style={styles.container}>
@@ -121,7 +163,11 @@ export default function TagsScreen() {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: theme.bg },
+    container: {
+        flex: 1,
+        backgroundColor: theme.bg,
+        paddingBottom: 100,
+    },
     header: {
         padding: 20,
         paddingTop: 60,
@@ -150,30 +196,32 @@ const styles = StyleSheet.create({
     columnWrapper: { justifyContent: 'space-between', marginBottom: 14 },
     card: {
         flex: 1,
-        backgroundColor: theme.card,
         borderRadius: theme.radius,
-        paddingVertical: 20,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginHorizontal: 4,
+        overflow: 'hidden',
+        backgroundColor: theme.card,
         ...theme.shadow,
+        marginHorizontal: 4,
     },
     thumbWrap: {
-        height: 80,
-        borderRadius: 12,
-        backgroundColor: '#e9e9ef',
+        height: 160,
+        borderRadius: theme.radius,
         overflow: 'hidden',
-        marginBottom: 8,
-        alignItems: 'center',
-        justifyContent: 'center',
+        backgroundColor: '#e9e9ef',
     },
     thumb: {
-        width: '80%',
-        height: '80%',
-        borderRadius: 10,
-        backgroundColor: '#ddd',
+        width: '100%',
+        height: '100%',
     },
-    cardTitle: { textAlign: 'center', color: theme.textPrimary, fontWeight: '600', fontSize: 16 },
+    cardTitle: {
+        position: 'absolute',
+        bottom: 0,
+        width: '100%',
+        padding: 10,
+        fontWeight: '600',
+        color: '#fff',
+        fontSize: 16,
+        backgroundColor: 'rgba(0,0,0,0.3)',
+    },
     tagPill: {
         backgroundColor: theme.accent + '15',
         borderRadius: 20,
