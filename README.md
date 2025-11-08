@@ -29,7 +29,28 @@
 ## 📦 Download APK
 
 ### Latest Release
-> **Note:** APK files are not included in the repository. Please build the APK using the instructions below, or download from [GitHub Releases](https://github.com/vamshigadde09/SmartShot/releases) (when available).
+> **Note:** APK files are not included in the repository to keep the repository size manageable. Please build the APK using the instructions below.
+
+#### How to Get the APK
+
+1. **Build from Source** (Recommended)
+   - Follow the [Building the APK](#building-the-apk) instructions below
+   - This ensures you have the latest version with all features
+
+2. **Download from GitHub Releases** (Coming Soon)
+   - Check [GitHub Releases](https://github.com/vamshigadde09/SmartShot/releases) for pre-built APK files
+   - Releases will be updated with each new version
+
+3. **Create a Release with APK**
+   - After building, you can create a GitHub Release:
+     ```bash
+     # Build the APK (see instructions below)
+     npx expo run:android --variant release
+     
+     # The APK will be at:
+     # android/app/build/outputs/apk/release/app-release.apk
+     ```
+   - Then upload the APK to [GitHub Releases](https://github.com/vamshigadde09/SmartShot/releases)
 
 ### Building the APK
 
