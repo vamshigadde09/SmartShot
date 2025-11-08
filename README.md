@@ -29,7 +29,7 @@
 ## 📦 Download APK
 
 ### Latest Release
-> **Note:** APK files are not included in the repository. Please build the APK using the instructions below, or download from [GitHub Releases](https://github.com/yourusername/SmartShot/releases) (when available).
+> **Note:** APK files are not included in the repository. Please build the APK using the instructions below, or download from [GitHub Releases](https://github.com/vamshigadde09/SmartShot/releases) (when available).
 
 ### Building the APK
 
@@ -43,7 +43,7 @@
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/SmartShot.git
+   git clone https://github.com/vamshigadde09/SmartShot.git
    cd SmartShot
    ```
 
@@ -249,9 +249,9 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 👤 Author
 
-**Your Name**
-- GitHub: [@yourusername](https://github.com/yourusername)
-- Email: your.email@example.com
+**Vamshi Gadde**
+- GitHub: [@vamshigadde09](https://github.com/vamshigadde09)
+- Repository: [SmartShot](https://github.com/vamshigadde09/SmartShot)
 
 ## 🙏 Acknowledgments
 
